@@ -30,6 +30,7 @@ model Host {
 
   volumes Volume[]
   jobs    ScanJob[]
+  browses BrowseRequest[]
 
   @@map("hosts")
 }
@@ -136,4 +137,23 @@ model AgentEnrollment {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("agent_enrollments")
+}
+
+/// Demande « lister les sous-dossiers de ce chemin » adressée à l'agent d'une machine (sélecteur de dossier de l'onglet Scans).
+/// Éphémère : l'API attend la réponse quelques secondes, les anciennes lignes sont purgées.
+model BrowseRequest {
+  id        String   @id @default(uuid())
+  hostId    String   @map("host_id")
+  /// null/vide = liste des emplacements autorisés de la machine
+  path      String?
+  /// pending | working | done | error
+  status    String   @default("pending")
+  result    Json?
+  error     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId, status])
+  @@map("browse_requests")
 }

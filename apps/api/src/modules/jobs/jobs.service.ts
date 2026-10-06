@@ -1,8 +1,12 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import type { CreateScanJobDto } from '@skvault/shared';
+import { BadRequestException, ConflictException, GatewayTimeoutException, Injectable, NotFoundException } from '@nestjs/common';
+import type { BrowseResult, CreateScanJobDto } from '@skvault/shared';
+import { Prisma } from '@skvault/db';
 import { PrismaService } from '../../prisma/prisma.service';
 
 const ONLINE_MS = 30_000;
+const BROWSE_WAIT_MS = 15_000;     // attente de la réponse de l'agent côté web
+const BROWSE_LONGPOLL_MS = 20_000; // attente d'une demande côté agent (réponse quasi instantanée)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Identity { hostName: string; os?: string }
 interface Progress { phase: 'listing' | 'hashing'; filesSeen: number; scanId?: string }
@@ -63,6 +67,32 @@ export class JobsService {
       return this.prisma.scanJob.update({ where: { id }, data: { cancelRequested: true } });
     }
     throw new BadRequestException('Ce scan est déjà terminé');
+  }
+
+  /** Sélecteur de dossier : pose une demande à l'agent de la machine et attend sa réponse (quelques secondes). */
+  async browse(hostId: string, path: string | undefined): Promise<BrowseResult> {
+    const host = await this.prisma.host.findUnique({ where: { id: hostId } });
+    if (!host) throw new NotFoundException('Machine inconnue');
+    if (!host.lastSeenAt || Date.now() - host.lastSeenAt.getTime() > ONLINE_MS) {
+      throw new ConflictException('Cet agent est hors ligne : impossible de parcourir ses dossiers');
+    }
+    await this.prisma.browseRequest.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 10 * 60_000) } } });
+    const req = await this.prisma.browseRequest.create({ data: { hostId, path: path || null } });
+
+    const deadline = Date.now() + BROWSE_WAIT_MS;
+    while (Date.now() < deadline) {
+      await sleep(250);
+      const r = await this.prisma.browseRequest.findUnique({ where: { id: req.id } });
+      if (r?.status === 'done' || r?.status === 'error') {
+        await this.prisma.browseRequest.deleteMany({ where: { id: req.id } }); // éphémère : consommée, on la supprime
+        if (r.status === 'error') throw new BadRequestException(r.error ?? 'Dossier illisible');
+        return r.result as unknown as BrowseResult;
+      }
+    }
+    await this.prisma.browseRequest.deleteMany({ where: { id: req.id } });
+    throw new GatewayTimeoutException(
+      'L\'agent n\'a pas répondu. S\'il a été installé avant cette fonction, mettez-le à jour en relançant sa commande d\'installation.',
+    );
   }
 
   // ── Côté agent ─────────────────────────────────────────────────────────────
@@ -135,5 +165,33 @@ export class JobsService {
     const job = await this.prisma.scanJob.findUnique({ where: { id } });
     if (!job || job.status !== 'running') throw new NotFoundException('Job introuvable ou terminé');
     return job;
+  }
+
+  /** Long-poll : attend jusqu'à 20 s qu'une demande de navigation arrive pour cette machine (réponse instantanée). */
+  async agentBrowsePoll(identity: Identity) {
+    const host = await this.touchHost(identity);
+    const deadline = Date.now() + BROWSE_LONGPOLL_MS;
+    do {
+      const rows = await this.prisma.$queryRaw<{ id: string; path: string | null }[]>(Prisma.sql`
+        UPDATE browse_requests SET status = 'working'
+        WHERE id = (SELECT id FROM browse_requests WHERE host_id = ${host.id} AND status = 'pending'
+                    ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+        RETURNING id, path`);
+      if (rows[0]) return { request: { id: rows[0].id, path: rows[0].path } };
+      await sleep(400);
+    } while (Date.now() < deadline);
+    return { request: null };
+  }
+
+  async agentBrowseResult(id: string, body: { ok: true; path: string; parent: string | null; entries: { name: string; path: string }[]; truncated: boolean } | { ok: false; error: string }) {
+    const req = await this.prisma.browseRequest.findUnique({ where: { id } });
+    if (!req || req.status !== 'working') throw new NotFoundException('Demande introuvable ou expirée');
+    await this.prisma.browseRequest.update({
+      where: { id },
+      data: body.ok
+        ? { status: 'done', result: { path: body.path, parent: body.parent, entries: body.entries, truncated: body.truncated } }
+        : { status: 'error', error: body.error },
+    });
+    return { ok: true };
   }
 }

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { createScanJobSchema } from '@skvault/shared';
+import { browseRequestSchema, createScanJobSchema } from '@skvault/shared';
 import { JwtGuard } from '../auth/jwt.guard';
 import { JobsService } from './jobs.service';
 
@@ -15,6 +15,11 @@ export class JobsController {
   @Get('hosts')
   hosts() {
     return this.service.hosts();
+  }
+
+  @Post('hosts/:id/browse')
+  browse(@Param('id') id: string, @Body() body: unknown) {
+    return this.service.browse(id, browseRequestSchema.parse(body ?? {}).path);
   }
 
   @Get('scan-jobs')

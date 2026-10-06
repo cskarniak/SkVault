@@ -1,12 +1,12 @@
 'use client';
 
 import {
-  Alert, Badge, Button, Card, Code, CopyButton, Group, Loader, Modal, Select, SimpleGrid, Stack, Table, Tabs, Text, TextInput, Title,
+  Alert, Badge, Button, Card, Code, CopyButton, Group, Loader, Modal, NavLink, ScrollArea, Select, SimpleGrid, Stack, Table, Tabs, Text, TextInput, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconCheck, IconCopy, IconDeviceDesktopPlus, IconPlayerPlay, IconX } from '@tabler/icons-react';
+import { IconArrowUp, IconCheck, IconCopy, IconDeviceDesktopPlus, IconFolder, IconFolderSearch, IconPlayerPlay, IconX } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { VOLUME_KINDS, VOLUME_KIND_LABELS, type ScanJobStatus, type VolumeKind } from '@skvault/shared';
+import { VOLUME_KINDS, VOLUME_KIND_LABELS, type BrowseResult, type ScanJobStatus, type VolumeKind } from '@skvault/shared';
 import { useMemo, useState } from 'react';
 import api from '@/lib/api';
 
@@ -122,6 +122,63 @@ function AddMachineModal({ opened, onClose }: { opened: boolean; onClose: () => 
   );
 }
 
+/** Sélecteur de dossier : l'agent de la machine liste ses sous-dossiers (jamais les fichiers), dans ses dossiers autorisés. */
+function BrowseModal({ host, opened, onClose, onPick }: {
+  host: Host | undefined; opened: boolean; onClose: () => void; onPick: (path: string) => void;
+}) {
+  const [path, setPath] = useState('');
+  const hostId = host?.id;
+  const listing = useQuery<BrowseResult>({
+    queryKey: ['browse', hostId, path],
+    queryFn: () => api.post(`/hosts/${hostId}/browse`, { path }).then((r) => r.data),
+    enabled: opened && !!hostId,
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    placeholderData: (prev) => prev,
+  });
+  const data = listing.data;
+  const windows = host?.os === 'win32';
+  const close = () => { setPath(''); onClose(); };
+
+  return (
+    <Modal opened={opened} onClose={close} title={`Choisir un dossier — ${host?.name ?? ''}`} size="lg">
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" c="dimmed" style={{ wordBreak: 'break-all' }}>
+            {data?.path ? data.path : 'Emplacements disponibles sur cette machine'}
+          </Text>
+          {listing.isFetching && <Loader size="xs" />}
+        </Group>
+        <Group gap="xs">
+          <Button size="xs" variant="light" leftSection={<IconArrowUp size={14} />}
+            disabled={!data || data.parent === null} onClick={() => setPath(data?.parent ?? '')}>Dossier parent</Button>
+          <Button size="xs" variant="subtle" disabled={!data?.path} onClick={() => setPath('')}>Emplacements</Button>
+        </Group>
+
+        {listing.isError && (
+          <Alert color="red" variant="light">
+            {(listing.error as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Impossible de lire ce dossier'}
+          </Alert>
+        )}
+        <ScrollArea h={320} type="auto" style={{ border: '1px solid var(--mantine-color-dark-4)', borderRadius: 8 }}>
+          {data?.entries.length === 0 && !listing.isError && <Text c="dimmed" size="sm" p="md">Aucun sous-dossier.</Text>}
+          {data?.entries.map((e) => (
+            <NavLink key={e.path} label={e.name}
+              leftSection={<IconFolder size={18} />} onClick={() => setPath(e.path)} />
+          ))}
+        </ScrollArea>
+        {data?.truncated && <Text size="xs" c="orange">Liste tronquée aux 2 000 premiers dossiers.</Text>}
+
+        <Group justify="space-between" mt="xs">
+          <Text size="xs" c="dimmed">{windows ? 'Les lecteurs et dossiers de cette machine Windows' : 'Seuls les dossiers autorisés de la machine sont visibles'}</Text>
+          <Button disabled={!data?.path} onClick={() => { if (data?.path) { onPick(data.path); close(); } }}>Choisir ce dossier</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
 export default function ScansPage() {
   const qc = useQueryClient();
   const hosts = useQuery<Host[]>({ queryKey: ['hosts'], queryFn: () => api.get('/hosts').then((r) => r.data), refetchInterval: 5000 });
@@ -131,6 +188,7 @@ export default function ScansPage() {
   });
 
   const [addOpen, setAddOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [hostId, setHostId] = useState<string | null>(null);
   const [rootPath, setRootPath] = useState('');
   const [label, setLabel] = useState('');
@@ -193,6 +251,8 @@ export default function ScansPage() {
               value={hostId} onChange={setHostId} />
             <TextInput label="Dossier sur cette machine" required placeholder={host?.os === 'win32' ? 'D:\\Photos  ou  \\\\NAS\\partage' : '/Volumes/MonDisque'} style={{ flex: 1, minWidth: 240 }}
               list="known-paths" value={rootPath} onChange={(e) => setRootPath(e.currentTarget.value)} />
+            <Button variant="light" leftSection={<IconFolderSearch size={16} />} disabled={!host?.online} onClick={() => setBrowseOpen(true)}
+              title={!host ? 'Choisissez d\'abord une machine' : host.online ? undefined : 'Agent hors ligne'}>Parcourir…</Button>
             <datalist id="known-paths">{knownPaths.map((p) => <option key={p} value={p} />)}</datalist>
             <TextInput label="Nom affiché" placeholder="(dernier dossier)" w={180} value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
             <Select label="Type" w={160} allowDeselect={false} value={kind} onChange={(v) => setKind(v ?? 'other')}
@@ -201,6 +261,8 @@ export default function ScansPage() {
           </Group>
         </form>
         {host && !host.online && <Text size="sm" c="yellow" mt="xs">Cet agent est hors ligne : le scan sera exécuté dès qu&apos;il se reconnectera.</Text>}
+        <BrowseModal host={host} opened={browseOpen} onClose={() => setBrowseOpen(false)}
+          onPick={(p) => { setRootPath(p); if (!label.trim()) setLabel(p.split(/[\\/]/).filter(Boolean).pop() ?? p); }} />
         <Text size="xs" c="dimmed" mt="xs">L&apos;agent ne scanne que sous ses dossiers autorisés (par défaut : dossier personnel et disques ; /Volumes, /mnt, /media sous macOS/Linux, lecteurs sous Windows). Lecture seule.</Text>
       </Card>
 

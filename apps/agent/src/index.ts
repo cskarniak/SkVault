@@ -20,8 +20,8 @@ import { createHash } from 'crypto';
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync, statfsSync } from 'fs';
 import { opendir } from 'fs/promises';
 import { homedir, hostname, platform } from 'os';
-import { join, relative, sep, win32 } from 'path';
-import { VOLUME_KINDS, type ScanFileDto } from '@skvault/shared';
+import { dirname, join, relative, sep, win32 } from 'path';
+import { VOLUME_KINDS, type BrowseResult, type ScanFileDto } from '@skvault/shared';
 
 const BATCH = 2000;
 const QUICK_CHUNK = 64 * 1024;
@@ -293,6 +293,60 @@ function checkAllowed(path: string, roots: string[]): string {
   return real;
 }
 
+
+const BROWSE_MAX_ENTRIES = 2000;
+
+/** Dossier (ou lien vers un dossier) ? Les liens sont suivis pour l'affichage ; l'entrée reste soumise à checkAllowed. */
+function isDirEntry(entry: import('fs').Dirent, full: string): boolean {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  try { return statSync(full).isDirectory(); } catch { return false; }
+}
+
+/**
+ * Sélecteur de dossier de l'interface web : liste les SOUS-DOSSIERS d'un chemin (jamais les fichiers), uniquement
+ * dans les dossiers autorisés. `requested` vide = liste des emplacements autorisés eux-mêmes.
+ */
+async function browse(roots: string[], requested: string | null): Promise<BrowseResult> {
+  if (!requested) {
+    return { path: '', parent: null, entries: roots.map((r) => ({ name: r, path: r })), truncated: false };
+  }
+  const real = checkAllowed(requested, roots);
+  const entries: BrowseResult['entries'] = [];
+  let truncated = false;
+  for await (const e of await opendir(real)) {
+    const full = join(real, e.name);
+    if (e.name.startsWith('.') || IGNORED_NAMES.has(e.name) || isExcludedName(e.name) || !isDirEntry(e, full)) continue;
+    if (entries.length >= BROWSE_MAX_ENTRIES) { truncated = true; break; }
+    entries.push({ name: e.name, path: full });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  const up = dirname(real);
+  // Au-dessus d'un emplacement autorisé on retombe sur la liste des emplacements ('').
+  const parent = up !== real && roots.some((r) => isUnderRoot(up, r)) ? up : '';
+  return { path: real, parent, entries, truncated };
+}
+
+/** Boucle indépendante des scans : répond aux demandes de navigation même pendant un scan (long-poll côté API). */
+async function browseLoop(identity: { hostName: string; os: string }, roots: string[]) {
+  for (;;) {
+    try {
+      const { request } = await agentCall<{ request: { id: string; path: string | null } | null }>('/browse/poll', identity);
+      if (!request) { await sleep(200); continue; }
+      let body: object;
+      try {
+        body = { ok: true, ...(await browse(roots, request.path)) };
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        body = { ok: false, error: err.code === 'EACCES' || err.code === 'EPERM' ? 'Accès refusé à ce dossier' : err.message.slice(0, 400) };
+      }
+      await agentCall(`/browse/${request.id}/result`, body);
+    } catch (e) {
+      await sleep(5000);
+    }
+  }
+}
+
 async function runDaemon() {
   const hostName = arg('host') ?? hostname();
   const identity = { hostName, os: platform() };
@@ -312,6 +366,7 @@ async function runDaemon() {
 
   // Heartbeat indépendant : la machine reste « en ligne » même pendant un long hash de gros fichier.
   setInterval(() => agentCall('/heartbeat', identity).catch(() => undefined), 10_000);
+  void browseLoop(identity, roots);
 
   for (;;) {
     try {

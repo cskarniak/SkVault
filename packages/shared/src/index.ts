@@ -73,3 +73,25 @@ export const jobFinishSchema = z.object({
 export const createEnrollmentSchema = z.object({
   hostName: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'Lettres, chiffres, point, tiret, souligné (64 max)').optional(),
 });
+
+/** Sélecteur de dossier : web → API, puis agent → API */
+export const browseRequestSchema = z.object({ path: z.string().optional() });
+export interface BrowseEntry { name: string; path: string }
+export interface BrowseResult {
+  /** Dossier listé ('' = liste des emplacements autorisés) */
+  path: string;
+  /** Dossier parent ('' = remonter à la liste des emplacements ; null = déjà à cette liste) */
+  parent: string | null;
+  entries: BrowseEntry[];
+  truncated: boolean;
+}
+export const browseResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    path: z.string(),
+    parent: z.string().nullable(),
+    entries: z.array(z.object({ name: z.string(), path: z.string() })).max(2000),
+    truncated: z.boolean(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string().max(500) }),
+]);

@@ -1,6 +1,6 @@
 import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
-import { agentIdentitySchema, jobFinishSchema, jobProgressSchema } from '@skvault/shared';
+import { agentIdentitySchema, browseResultSchema, jobFinishSchema, jobProgressSchema } from '@skvault/shared';
 import { AgentGuard } from '../ingest/agent.guard';
 import { JobsService } from './jobs.service';
 
@@ -24,6 +24,16 @@ export class AgentController {
   @Post('poll')
   poll(@Body() body: unknown) {
     return this.service.agentPoll(agentIdentitySchema.parse(body));
+  }
+
+  @Post('browse/poll')
+  browsePoll(@Body() body: unknown) {
+    return this.service.agentBrowsePoll(agentIdentitySchema.parse(body));
+  }
+
+  @Post('browse/:id/result')
+  browseResult(@Param('id') id: string, @Body() body: unknown) {
+    return this.service.agentBrowseResult(id, browseResultSchema.parse(body));
   }
 
   @Post('jobs/:id/progress')
