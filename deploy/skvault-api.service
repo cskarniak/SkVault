@@ -1,0 +1,14 @@
+[Unit]
+Description=SkVault API (NestJS)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=christian
+WorkingDirectory=/home/christian/apps/SkVault
+ExecStart=/usr/local/bin/node /home/christian/apps/SkVault/apps/api/dist/src/main.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+name: skvault
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: skvault-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: skvault
+      POSTGRES_PASSWORD: skvault
+      POSTGRES_DB: skvault
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skvault -d skvault"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

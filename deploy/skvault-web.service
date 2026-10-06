@@ -1,0 +1,14 @@
+[Unit]
+Description=SkVault Web (Next.js)
+After=network.target skvault-api.service
+
+[Service]
+Type=simple
+User=christian
+WorkingDirectory=/home/christian/apps/SkVault/apps/web
+ExecStart=/home/christian/apps/SkVault/apps/web/node_modules/.bin/next start -H 127.0.0.1 -p 3010
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

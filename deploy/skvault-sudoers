@@ -1,0 +1,1 @@
+christian ALL=(root) NOPASSWD: /usr/bin/systemctl restart skvault-api, /usr/bin/systemctl restart skvault-web, /usr/bin/systemctl restart skvault-api skvault-web, /usr/bin/systemctl status skvault-api, /usr/bin/systemctl status skvault-web

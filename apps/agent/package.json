@@ -1,0 +1,11 @@
+{
+  "name": "agent",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@skvault/shared": "workspace:*" },
+  "devDependencies": { "@types/node": "^20", "tsx": "^4.19.0", "typescript": "^5" }
+}

@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+/// Machine sur laquelle tourne un agent de scan (MacBook, vieux MacBook Linux, serveur...).
+model Host {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  os        String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  volumes Volume[]
+
+  @@map("hosts")
+}
+
+/// Racine cataloguée : un disque, un NAS monté, un dossier de sauvegarde...
+/// `kind` : internal | ssd | das | nas | backup | other
+model Volume {
+  id         String    @id @default(uuid())
+  hostId     String    @map("host_id")
+  label      String
+  rootPath   String    @map("root_path")
+  kind       String    @default("other")
+  totalBytes BigInt?   @map("total_bytes")
+  freeBytes  BigInt?   @map("free_bytes")
+  lastScanAt DateTime? @map("last_scan_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  host  Host        @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  files FileEntry[]
+  scans ScanRun[]
+
+  @@unique([hostId, rootPath])
+  @@map("volumes")
+}
+
+model ScanRun {
+  id         String    @id @default(uuid())
+  volumeId   String    @map("volume_id")
+  /// running | done | failed
+  status     String    @default("running")
+  filesSeen  Int       @default(0) @map("files_seen")
+  filesRemoved Int     @default(0) @map("files_removed")
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  volume Volume @relation(fields: [volumeId], references: [id], onDelete: Cascade)
+
+  @@map("scan_runs")
+}
+
+/// Un fichier d'un volume. `quickHash` (taille + début + fin) est calculé pour tous les fichiers ;
+/// `hash` (SHA-256 complet) uniquement pour ceux qui ont un homonyme (même taille + quickHash),
+/// ce qui évite de relire tous les disques en entier. Remis à null si taille ou date changent.
+model FileEntry {
+  id         BigInt    @id @default(autoincrement())
+  volumeId   String    @map("volume_id")
+  relPath    String    @map("rel_path")
+  name       String
+  ext        String
+  size       BigInt
+  mtime      DateTime
+  quickHash  String?   @map("quick_hash")
+  hash       String?
+  /// MD5 complet repris de l'ancien index `dedup/` (import) — algorithme différent de `hash` (SHA-256),
+  /// donc jamais comparé avec lui. Conservé tant que taille et date ne changent pas.
+  md5        String?
+  lastScanId String?   @map("last_scan_id")
+
+  volume Volume @relation(fields: [volumeId], references: [id], onDelete: Cascade)
+
+  @@unique([volumeId, relPath])
+  @@index([size, quickHash])
+  @@index([hash])
+  @@index([md5])
+  @@index([name])
+  @@map("file_entries")
+}

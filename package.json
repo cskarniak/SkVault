@@ -1,0 +1,22 @@
+{
+  "name": "skvault",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "node": ">=20.0.0", "pnpm": ">=9.0.0" },
+  "scripts": {
+    "dev": "pnpm build:packages && pnpm --parallel --filter web --filter api dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "pnpm build:packages && pnpm --filter api dev",
+    "agent": "pnpm --filter agent start",
+    "build:packages": "pnpm --filter @skvault/shared build && pnpm --filter @skvault/db build",
+    "build": "pnpm --filter web build && pnpm --filter api build",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @skvault/db generate",
+    "db:migrate": "pnpm --filter @skvault/db migrate:dev",
+    "db:deploy": "pnpm --filter @skvault/db migrate:deploy",
+    "db:studio": "pnpm --filter @skvault/db studio",
+    "docker:up": "docker compose -f docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": { "typescript": "^5.7.0" }
+}
