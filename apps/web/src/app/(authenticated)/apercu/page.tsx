@@ -3,6 +3,7 @@
 import { Badge, Button, Card, Group, Loader, SimpleGrid, Table, Text, Title } from '@mantine/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { VOLUME_KIND_LABELS, type VolumeKind } from '@skvault/shared';
+import { notifications } from '@mantine/notifications';
 import api, { formatBytes } from '@/lib/api';
 
 interface Overview { files: number; bytes: number; duplicateGroups: number; wastedBytes: number }
@@ -18,6 +19,16 @@ export default function ApercuPage() {
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/volumes/${id}`),
     onSuccess: () => qc.invalidateQueries(),
+  });
+
+  const rescan = useMutation({
+    mutationFn: (id: string) => api.post(`/scan-jobs/rescan/${id}`),
+    onSuccess: () => notifications.show({ message: 'Scan demandé — suivi dans l\'onglet Scans', color: 'teal' }),
+    onError: (e) =>
+      notifications.show({
+        message: (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Erreur',
+        color: 'red',
+      }),
   });
 
   const confirmRemove = (v: Volume) => {
@@ -38,7 +49,7 @@ export default function ApercuPage() {
       )}
       <Title order={3} mb="sm">Volumes</Title>
       {volumes.data?.length === 0 && (
-        <Text c="dimmed">Aucun volume. Lancez un scan : <code>pnpm agent scan /chemin/du/disque --label &quot;Mon disque&quot; --kind ssd</code></Text>
+        <Text c="dimmed">Aucun volume. Lancez un premier scan depuis l&apos;onglet Scans (l&apos;agent doit tourner : <code>pnpm agent run</code>).</Text>
       )}
       <Table.ScrollContainer minWidth={700}>
         <Table striped highlightOnHover>
@@ -54,7 +65,12 @@ export default function ApercuPage() {
                 <Table.Td>{v.files.toLocaleString('fr-FR')}</Table.Td>
                 <Table.Td>{formatBytes(v.bytes)}</Table.Td>
                 <Table.Td>{v.lastScanAt ? new Date(v.lastScanAt).toLocaleString('fr-FR') : '—'}</Table.Td>
-                <Table.Td><Button size="compact-xs" color="red" variant="subtle" onClick={() => confirmRemove(v)}>Retirer</Button></Table.Td>
+                <Table.Td>
+                  <Group gap={4} wrap="nowrap">
+                    <Button size="compact-xs" variant="light" loading={rescan.isPending && rescan.variables === v.id} onClick={() => rescan.mutate(v.id)}>Rescanner</Button>
+                    <Button size="compact-xs" color="red" variant="subtle" onClick={() => confirmRemove(v)}>Retirer</Button>
+                  </Group>
+                </Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>

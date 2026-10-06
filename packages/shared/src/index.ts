@@ -42,3 +42,28 @@ export const pushHashesSchema = z.object({
   hashes: z.array(z.object({ relPath: z.string().min(1), hash: z.string().min(1) })).max(5000),
 });
 export type PushHashesDto = z.infer<typeof pushHashesSchema>;
+
+/** Scans déclenchés depuis le web */
+export const createScanJobSchema = z.object({
+  hostId: z.string().min(1),
+  rootPath: z.string().startsWith('/', 'Chemin absolu requis (ex. /Volumes/MonDisque)'),
+  label: z.string().min(1),
+  kind: z.enum(VOLUME_KINDS).default('other'),
+});
+export type CreateScanJobDto = z.infer<typeof createScanJobSchema>;
+
+export const SCAN_JOB_STATUSES = ['queued', 'running', 'done', 'failed', 'cancelled'] as const;
+export type ScanJobStatus = (typeof SCAN_JOB_STATUSES)[number];
+
+/** Protocole agent ⇄ API pour les jobs */
+export const agentIdentitySchema = z.object({ hostName: z.string().min(1), os: z.string().optional() });
+export const jobProgressSchema = z.object({
+  phase: z.enum(['listing', 'hashing']),
+  filesSeen: z.number().int().nonnegative(),
+  scanId: z.string().optional(),
+});
+export const jobFinishSchema = z.object({
+  status: z.enum(['done', 'failed', 'cancelled']),
+  message: z.string().max(1000).optional(),
+  filesSeen: z.number().int().nonnegative().optional(),
+});

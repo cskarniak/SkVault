@@ -23,10 +23,13 @@ model Host {
   id        String   @id @default(uuid())
   name      String   @unique
   os        String?
+  /// Dernier signe de vie de l'agent (heartbeat) : « en ligne » si < 30 s.
+  lastSeenAt DateTime? @map("last_seen_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   volumes Volume[]
+  jobs    ScanJob[]
 
   @@map("hosts")
 }
@@ -51,6 +54,32 @@ model Volume {
 
   @@unique([hostId, rootPath])
   @@map("volumes")
+}
+
+/// Demande de scan lancée depuis l'interface web, exécutée par l'agent de la machine concernée
+/// (l'agent interroge l'API : aucune connexion entrante vers les machines scannées).
+model ScanJob {
+  id              String    @id @default(uuid())
+  hostId          String    @map("host_id")
+  rootPath        String    @map("root_path")
+  label           String
+  kind            String    @default("other")
+  /// queued | running | done | failed | cancelled
+  status          String    @default("queued")
+  /// listing | hashing
+  phase           String?
+  filesSeen       Int       @default(0) @map("files_seen")
+  cancelRequested Boolean   @default(false) @map("cancel_requested")
+  message         String?
+  scanRunId       String?   @map("scan_run_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  finishedAt      DateTime? @map("finished_at")
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId, status])
+  @@map("scan_jobs")
 }
 
 model ScanRun {

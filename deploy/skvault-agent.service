@@ -1,0 +1,18 @@
+[Unit]
+Description=Agent de scan SkVault (scanne le NAS monté sur skbox-mini)
+After=network-online.target skvault-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=christian
+WorkingDirectory=/home/christian/apps/SkVault
+# Le jeton est lu dans le .env du serveur (pas de secret dans l'unité) ; l'API est jointe en local.
+ExecStart=/bin/bash -c 'export SKVAULT_AGENT_TOKEN="$(grep ^AGENT_TOKEN= .env | cut -d= -f2-)"; exec pnpm agent run --host skbox-mini'
+Environment=SKVAULT_URL=http://127.0.0.1:3011/api
+Environment=SKVAULT_ALLOWED_ROOTS=/mnt/nas
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

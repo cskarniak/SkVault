@@ -1,0 +1,18 @@
+# Agent SkVault (Linux) — service utilisateur systemd.
+#   mkdir -p ~/.config/systemd/user && cp skvault-agent.service ~/.config/systemd/user/
+#   (créer ~/.config/skvault-agent.env, voir README) puis :
+#   systemctl --user daemon-reload && systemctl --user enable --now skvault-agent
+#   loginctl enable-linger $USER      # pour qu'il tourne aussi sans session ouverte
+[Unit]
+Description=Agent de scan SkVault
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/skvault-agent.env
+WorkingDirectory=%h/SkVault
+ExecStart=/usr/bin/env pnpm agent run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

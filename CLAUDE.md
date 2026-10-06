@@ -36,6 +36,17 @@ Un volume = (machine, chemin racine). Types : internal, ssd, das, nas, backup, o
 Auth utilisateur : JWT, le tout premier compte se crée depuis `/login` puis l'inscription est fermée.
 L'interface ne supprime jamais de fichiers (consultation + recherche + doublons) ; « Retirer un volume » n'enlève que le catalogue.
 
+## Scans lancés depuis le web (démon d'agent)
+`pnpm agent run` : l'agent reste en veille et **interroge** l'API (`/api/ingest/agent/*` : hello → heartbeat 10 s → poll 3 s →
+progress → finish) ; aucun port ouvert sur les machines scannées. L'onglet **Scans** crée des `ScanJob` (table `scan_jobs`)
+adressés à une machine ; l'agent de cette machine les réserve atomiquement (`FOR UPDATE SKIP LOCKED`), exécute le scan existant
+et remonte la progression ; l'annulation est transmise à la remontée suivante (≤ 2 s). Bouton « Rescanner » sur chaque volume.
+- Machine « en ligne » = heartbeat < 30 s. Un job pour une machine hors ligne reste en attente jusqu'à son retour.
+- Au démarrage, l'agent déclare « échoué » les jobs « running » orphelins de sa machine (crash/redémarrage).
+- Sécurité : l'agent refuse tout chemin hors des dossiers autorisés (`SKVAULT_ALLOWED_ROOTS`, défaut : $HOME, /Volumes, /mnt,
+  /media, /run/media ; liens symboliques résolus). Scan annulé/échoué : le `ScanRun` passe en `failed`, rien n'est purgé.
+- Installation de l'agent sur une machine + démarrage automatique : `deploy/agent/README.md` (launchd / systemd).
+
 ## Import de l'ancien index `dedup/dedup.sqlite`
 `pnpm agent import-dedup ~/Documents/dev/dedup/dedup.sqlite [--kind nas] [--skip-doublons]` — lit le fichier SQLite en
 lecture seule (via le binaire `sqlite3`), sans relire les disques ; un volume par `dir_root` (`/Volumes/photo_bbl`,
@@ -51,7 +62,7 @@ le même volume). Idempotent. Vérifié : 48 405 fichiers, 4 004 groupes de doub
 - Le « dernier scan » d'un volume importé affiche la date de l'import, pas celle de l'ancien scan.
 
 ## Reste à faire (idées)
-- Agent en service (launchd sur macOS / systemd sur Linux) + scans planifiés ; vieux MacBooks : vérifier Node ≥ 20
+- Scans planifiés (cron côté API) ; vieux MacBooks : vérifier Node ≥ 20
 - Agents HTTPS : le certificat `skapps.pem` est auto-signé → `NODE_EXTRA_CA_CERTS=...` sur les machines agents
 - Actions sur doublons (marquer/déplacer), vue arborescente par volume, détection de photos par date EXIF
 - Déploiement : voir `deploy/README.md` (jamais sans accord explicite)

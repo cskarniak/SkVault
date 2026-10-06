@@ -2,7 +2,7 @@
 
 import { ActionIcon, AppShell as MantineAppShell, Burger, Group, NavLink, Title, Tooltip } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { IconApps, IconCopy, IconLayoutGrid, IconLogout, IconSearch } from '@tabler/icons-react';
+import { IconApps, IconCopy, IconLayoutGrid, IconLogout, IconRadar, IconSearch } from '@tabler/icons-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
@@ -12,6 +12,7 @@ const LAUNCHER_URL = process.env.NEXT_PUBLIC_LAUNCHER_URL ?? 'https://apps.home'
 
 const NAV = [
   { label: "Vue d'ensemble", href: '/apercu', icon: IconLayoutGrid },
+  { label: 'Scans', href: '/scans', icon: IconRadar },
   { label: 'Recherche', href: '/recherche', icon: IconSearch },
   { label: 'Doublons', href: '/doublons', icon: IconCopy },
 ];
