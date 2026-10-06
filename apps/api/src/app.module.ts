@@ -5,6 +5,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { IngestModule } from './modules/ingest/ingest.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { JobsModule } from './modules/jobs/jobs.module';
+import { AgentInstallModule } from './modules/agent-install/agent-install.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { JobsModule } from './modules/jobs/jobs.module';
     IngestModule,
     CatalogModule,
     JobsModule,
+    AgentInstallModule,
   ],
 })
 export class AppModule {}

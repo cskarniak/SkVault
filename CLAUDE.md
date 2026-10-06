@@ -47,6 +47,33 @@ et remonte la progression ; l'annulation est transmise à la remontée suivante 
   /media, /run/media ; liens symboliques résolus). Scan annulé/échoué : le `ScanRun` passe en `failed`, rien n'est purgé.
 - Installation de l'agent sur une machine + démarrage automatique : `deploy/agent/README.md` (launchd / systemd).
 
+### Windows
+`install.ps1` (modèle `apps/api/assets/install-agent.ps1`, servi avec un BOM UTF-8) : commande PowerShell affichée dans l'onglet Windows
+(`curl.exe -k … -o %TEMP%\skvault-install.ps1` puis `powershell -File …` ; `… uninstall` pour désinstaller). **Sans droits administrateur** :
+lanceur `~\.skvault-agent\start-agent.ps1` (relance l'agent s'il s'arrête, journal tronqué à 5 Mo) démarré par la clé
+`HKCU\…\Run` ; dossier protégé par icacls (il contient le jeton). Chemins acceptés : `D:\…`, `C:/…`, `\\NAS\partage`.
+Dossiers autorisés par défaut sous Windows : dossier personnel + lecteurs présents ; `SKVAULT_ALLOWED_ROOTS` se sépare par `;` ou `,`.
+**Le script PowerShell n'a pas pu être exécuté lors du développement (aucun Windows/PowerShell disponible)** : seuls sa génération, sa
+structure et le côté agent (comparaison de chemins Windows, simulée) ont été testés. À valider sur une vraie machine avec
+`$env:SKVAULT_INSTALL_DRY_RUN=1` d'abord. Windows 10/11 requis (Node 20, `curl.exe` fourni avec Windows).
+
+### Installer un agent depuis le web (« Ajouter une machine »)
+Un site web ne peut pas s'installer seul sur une autre machine : l'onglet Scans génère une **commande à coller une fois** :
+`curl -fsSk "https://skvault.home/api/agent-install/<code>/install.sh" | bash`.
+- `POST /api/agent-enrollments` (JWT) crée un code aléatoire valable **1 h** (table `agent_enrollments`, nom de machine facultatif).
+  Les routes `GET /api/agent-install/:code/{install.sh,agent.js,rootCA.pem}` sont publiques mais protégées par ce code.
+- `install.sh` (modèle : `apps/api/assets/install-agent.sh`, jeton/origine/code injectés par l'API) vérifie Node ≥ 20, télécharge
+  l'agent, écrit la config (chmod 600) et installe le démarrage automatique : LaunchAgent `com.skvault.agent` (macOS) ou service
+  systemd utilisateur `skvault-agent` (Linux). Idempotent (relancer = mise à jour). `… | bash -s -- uninstall` désinstalle.
+  `SKVAULT_INSTALL_DRY_RUN=1` affiche les actions sans rien installer (utilisé pour les tests).
+- L'agent est servi comme **un seul fichier** `apps/agent/dist/agent.js` (`pnpm --filter agent bundle`, inclus dans `pnpm build`) :
+  seul Node ≥ 20 est requis sur la machine, ni pnpm ni dépôt.
+- HTTPS : le script est récupéré avec `curl -k` (la machine ne connaît pas encore l'autorité mkcert) ; si `ROOT_CA_FILE` (chemin du
+  `rootCA.pem` **public**, jamais `rootCA-key.pem`) est défini côté serveur, il est installé sur la machine et l'agent vérifie
+  ensuite normalement le certificat (`NODE_EXTRA_CA_CERTS`).
+- Limite actuelle : un seul jeton d'agent partagé (`AGENT_TOKEN`) pour toutes les machines — pas de jeton par machine ni de révocation.
+- Les entrées invalides (schémas Zod) renvoient 400 avec un message lisible (`common/zod-exception.filter.ts`).
+
 ## Import de l'ancien index `dedup/dedup.sqlite`
 `pnpm agent import-dedup ~/Documents/dev/dedup/dedup.sqlite [--kind nas] [--skip-doublons]` — lit le fichier SQLite en
 lecture seule (via le binaire `sqlite3`), sans relire les disques ; un volume par `dir_root` (`/Volumes/photo_bbl`,

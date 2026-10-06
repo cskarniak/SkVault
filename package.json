@@ -9,7 +9,7 @@
     "dev:api": "pnpm build:packages && pnpm --filter api dev",
     "agent": "pnpm --filter agent start",
     "build:packages": "pnpm --filter @skvault/shared build && pnpm --filter @skvault/db build",
-    "build": "pnpm --filter web build && pnpm --filter api build",
+    "build": "pnpm --filter web build && pnpm --filter api build && pnpm --filter agent bundle",
     "typecheck": "pnpm -r typecheck",
     "db:generate": "pnpm --filter @skvault/db generate",
     "db:migrate": "pnpm --filter @skvault/db migrate:dev",

@@ -1,10 +1,10 @@
 'use client';
 
 import {
-  Alert, Badge, Button, Card, Group, Loader, Select, SimpleGrid, Stack, Table, Text, TextInput, Title,
+  Alert, Badge, Button, Card, Code, CopyButton, Group, Loader, Modal, Select, SimpleGrid, Stack, Table, Tabs, Text, TextInput, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconPlayerPlay, IconX } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconDeviceDesktopPlus, IconPlayerPlay, IconX } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { VOLUME_KINDS, VOLUME_KIND_LABELS, type ScanJobStatus, type VolumeKind } from '@skvault/shared';
 import { useMemo, useState } from 'react';
@@ -25,6 +25,9 @@ const STATUS: Record<ScanJobStatus, { label: string; color: string }> = {
   cancelled: { label: 'Annulé', color: 'gray' },
 };
 
+const OS_LABELS: Record<string, string> = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' };
+const osLabel = (os: string | null) => (os ? OS_LABELS[os] ?? os : '—');
+
 const errorMessage = (e: unknown) =>
   (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Une erreur est survenue';
 
@@ -32,6 +35,91 @@ function duration(j: Job): string {
   if (!j.startedAt) return '—';
   const s = Math.round(((j.finishedAt ? new Date(j.finishedAt) : new Date()).getTime() - new Date(j.startedAt).getTime()) / 1000);
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+function AddMachineModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+  const [hostName, setHostName] = useState('');
+  const enroll = useMutation({
+    mutationFn: () =>
+      api.post<{ code: string; expiresAt: string; bundleAvailable: boolean }>('/agent-enrollments', hostName.trim() ? { hostName: hostName.trim() } : {}).then((r) => r.data),
+    onError: (e) => notifications.show({ message: errorMessage(e), color: 'red' }),
+  });
+  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  const url = enroll.data ? `${base}/api/agent-install/${enroll.data.code}/install.sh` : '';
+  const install = `curl -fsSk "${url}" | bash`;
+  const uninstall = `curl -fsSk "${url}" | bash -s -- uninstall`;
+  const winUrl = url.replace('install.sh', 'install.ps1');
+  const winFile = '"$env:TEMP\\skvault-install.ps1"';
+  const winInstall = `curl.exe -fsSk "${winUrl}" -o ${winFile}; powershell -NoProfile -ExecutionPolicy Bypass -File ${winFile}`;
+  const winUninstall = `${winInstall} uninstall`;
+  const close = () => { enroll.reset(); setHostName(''); onClose(); };
+
+  return (
+    <Modal opened={opened} onClose={close} title="Ajouter une machine" size="lg">
+      <Stack>
+        <Text size="sm">
+          Une page web ne peut pas s&apos;installer toute seule sur une autre machine : SkVault génère une commande à coller
+          <b> une fois</b> dans le terminal de la machine à scanner (Mac ou Linux). Elle installe l&apos;agent, le configure et le
+          lance automatiquement à chaque démarrage.
+        </Text>
+        <Text size="sm" c="dimmed">Prérequis sur cette machine : Node.js 20 ou plus. L&apos;agent est en lecture seule et n&apos;ouvre aucun port.</Text>
+
+        {!enroll.data ? (
+          <>
+            <TextInput label="Nom de la machine (facultatif)" description="Sinon, le nom d'hôte de la machine est utilisé." placeholder="vieux-macbook-2011"
+              value={hostName} onChange={(e) => setHostName(e.currentTarget.value)} />
+            <Button onClick={() => enroll.mutate()} loading={enroll.isPending}>Générer la commande</Button>
+          </>
+        ) : (
+          <>
+            {!enroll.data.bundleAvailable && (
+              <Alert color="orange" variant="light">Le fichier de l&apos;agent n&apos;est pas construit sur ce serveur : lancez <code>pnpm --filter agent bundle</code>.</Alert>
+            )}
+            <Tabs defaultValue="unix" keepMounted={false}>
+              <Tabs.List mb="sm">
+                <Tabs.Tab value="unix">macOS / Linux</Tabs.Tab>
+                <Tabs.Tab value="windows">Windows</Tabs.Tab>
+              </Tabs.List>
+              {[
+                { value: 'unix', where: 'dans le terminal de la machine', cmd: install, un: uninstall, prereq: 'Node.js 20 ou plus.' },
+                { value: 'windows', where: 'dans PowerShell (pas dans l\'invite de commandes), sans droits administrateur', cmd: winInstall, un: winUninstall,
+                  prereq: 'Windows 10 ou 11 et Node.js 20 ou plus (winget install OpenJS.NodeJS.LTS).' },
+              ].map((t) => (
+                <Tabs.Panel key={t.value} value={t.value}>
+                  <Stack gap="xs">
+                    <Text size="sm" fw={600}>Collez ceci {t.where} :</Text>
+                    <Group wrap="nowrap" align="flex-start">
+                      <Code block style={{ flex: 1, wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>{t.cmd}</Code>
+                      <CopyButton value={t.cmd}>
+                        {({ copied, copy }) => (
+                          <Button variant="light" color={copied ? 'teal' : 'blue'} onClick={copy} leftSection={copied ? <IconCheck size={16} /> : <IconCopy size={16} />}>
+                            {copied ? 'Copié' : 'Copier'}
+                          </Button>
+                        )}
+                      </CopyButton>
+                    </Group>
+                    <Text size="xs" c="dimmed">Prérequis : {t.prereq}</Text>
+                    <details>
+                      <summary style={{ cursor: 'pointer' }}><Text span size="sm">Désinstaller plus tard</Text></summary>
+                      <Code block mt="xs" style={{ wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>{t.un}</Code>
+                    </details>
+                  </Stack>
+                </Tabs.Panel>
+              ))}
+            </Tabs>
+            <Text size="sm" c="dimmed">
+              Valable jusqu&apos;à {new Date(enroll.data.expiresAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
+              La machine apparaît « en ligne » dans la liste quelques secondes après l&apos;exécution. Relancer la commande met l&apos;agent à jour.
+            </Text>
+            <Alert color="yellow" variant="light" title="À savoir">
+              Cette commande contient un accès à l&apos;installation : ne la partagez pas. Elle est fournie sur ce réseau avec <code>curl -k</code>
+              (certificat local non encore connu de la machine) ; l&apos;agent installé vérifie ensuite normalement le HTTPS.
+            </Alert>
+          </>
+        )}
+      </Stack>
+    </Modal>
+  );
 }
 
 export default function ScansPage() {
@@ -42,6 +130,7 @@ export default function ScansPage() {
     queryKey: ['volumes'], queryFn: () => api.get('/volumes').then((r) => r.data),
   });
 
+  const [addOpen, setAddOpen] = useState(false);
   const [hostId, setHostId] = useState<string | null>(null);
   const [rootPath, setRootPath] = useState('');
   const [label, setLabel] = useState('');
@@ -72,10 +161,14 @@ export default function ScansPage() {
       <Title order={2}>Scans</Title>
 
       <div>
-        <Title order={4} mb="xs">Machines</Title>
+        <Group justify="space-between" mb="xs">
+          <Title order={4}>Machines</Title>
+          <Button size="xs" variant="light" leftSection={<IconDeviceDesktopPlus size={16} />} onClick={() => setAddOpen(true)}>Ajouter une machine</Button>
+        </Group>
+        <AddMachineModal opened={addOpen} onClose={() => setAddOpen(false)} />
         {hosts.data?.length === 0 && (
           <Alert color="blue" variant="light">
-            Aucune machine connue. Sur chaque machine à scanner, lancez l&apos;agent : <code>pnpm agent run</code>
+            Aucune machine connue. Cliquez sur « Ajouter une machine » pour installer l&apos;agent sur une machine à scanner.
           </Alert>
         )}
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
@@ -85,7 +178,7 @@ export default function ScansPage() {
                 <Text fw={600}>{h.name}</Text>
                 <Badge color={h.online ? 'teal' : 'gray'} variant="dot">{h.online ? 'agent en ligne' : 'hors ligne'}</Badge>
               </Group>
-              <Text size="xs" c="dimmed">{h.os ?? '—'} · {h.volumes} volume(s){!h.online && h.lastSeenAt ? ` · vu le ${new Date(h.lastSeenAt).toLocaleString('fr-FR')}` : ''}</Text>
+              <Text size="xs" c="dimmed">{osLabel(h.os)} · {h.volumes} volume(s){!h.online && h.lastSeenAt ? ` · vu le ${new Date(h.lastSeenAt).toLocaleString('fr-FR')}` : ''}</Text>
             </Card>
           ))}
         </SimpleGrid>
@@ -98,7 +191,7 @@ export default function ScansPage() {
             <Select label="Machine" required placeholder="Choisir" w={220}
               data={hosts.data?.map((h) => ({ value: h.id, label: `${h.name}${h.online ? '' : ' (hors ligne)'}` })) ?? []}
               value={hostId} onChange={setHostId} />
-            <TextInput label="Dossier sur cette machine" required placeholder="/Volumes/MonDisque" style={{ flex: 1, minWidth: 240 }}
+            <TextInput label="Dossier sur cette machine" required placeholder={host?.os === 'win32' ? 'D:\\Photos  ou  \\\\NAS\\partage' : '/Volumes/MonDisque'} style={{ flex: 1, minWidth: 240 }}
               list="known-paths" value={rootPath} onChange={(e) => setRootPath(e.currentTarget.value)} />
             <datalist id="known-paths">{knownPaths.map((p) => <option key={p} value={p} />)}</datalist>
             <TextInput label="Nom affiché" placeholder="(dernier dossier)" w={180} value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
@@ -108,7 +201,7 @@ export default function ScansPage() {
           </Group>
         </form>
         {host && !host.online && <Text size="sm" c="yellow" mt="xs">Cet agent est hors ligne : le scan sera exécuté dès qu&apos;il se reconnectera.</Text>}
-        <Text size="xs" c="dimmed" mt="xs">L&apos;agent ne scanne que sous ses dossiers autorisés (par défaut : dossier personnel, /Volumes, /mnt, /media). Lecture seule.</Text>
+        <Text size="xs" c="dimmed" mt="xs">L&apos;agent ne scanne que sous ses dossiers autorisés (par défaut : dossier personnel et disques ; /Volumes, /mnt, /media sous macOS/Linux, lecteurs sous Windows). Lecture seule.</Text>
       </Card>
 
       <div>

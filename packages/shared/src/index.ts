@@ -46,7 +46,9 @@ export type PushHashesDto = z.infer<typeof pushHashesSchema>;
 /** Scans déclenchés depuis le web */
 export const createScanJobSchema = z.object({
   hostId: z.string().min(1),
-  rootPath: z.string().startsWith('/', 'Chemin absolu requis (ex. /Volumes/MonDisque)'),
+  rootPath: z
+    .string()
+    .regex(/^(\/|[A-Za-z]:[\\/]|\\\\)/, 'Chemin absolu requis (ex. /Volumes/MonDisque ou D:\\Photos)'),
   label: z.string().min(1),
   kind: z.enum(VOLUME_KINDS).default('other'),
 });
@@ -66,4 +68,8 @@ export const jobFinishSchema = z.object({
   status: z.enum(['done', 'failed', 'cancelled']),
   message: z.string().max(1000).optional(),
   filesSeen: z.number().int().nonnegative().optional(),
+});
+
+export const createEnrollmentSchema = z.object({
+  hostName: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'Lettres, chiffres, point, tiret, souligné (64 max)').optional(),
 });

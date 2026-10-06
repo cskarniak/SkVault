@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { ZodExceptionFilter } from './common/zod-exception.filter';
 
 // Les tailles de fichiers (BigInt Postgres) restent < 2^53 : sérialisées en nombre JSON.
 (BigInt.prototype as unknown as { toJSON: () => number }).toJSON = function (this: bigint) {
@@ -11,6 +12,7 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.setGlobalPrefix('api');
+  app.useGlobalFilters(new ZodExceptionFilter());
   app.useBodyParser('json', { limit: '20mb' });
   app.enableCors({ origin: process.env['CORS_ORIGIN'] ?? 'http://localhost:3010' });
 

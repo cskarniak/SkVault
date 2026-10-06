@@ -124,3 +124,16 @@ model FileEntry {
   @@index([name])
   @@map("file_entries")
 }
+
+/// Code d'installation d'agent généré depuis le web (valable 1 h) : donne accès au script d'installation
+/// et au fichier de l'agent sans authentification utilisateur, depuis la machine à installer.
+model AgentEnrollment {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  /// Nom de machine imposé à l'agent (sinon son hostname)
+  hostName  String?  @map("host_name")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("agent_enrollments")
+}

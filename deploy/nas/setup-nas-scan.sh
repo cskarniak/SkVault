@@ -34,7 +34,9 @@ for s in $SHARES; do
   grep -qF "//$NAS_HOST/$s $MNT/$s " /etc/fstab || echo "$LINE" | sudo tee -a /etc/fstab >/dev/null
 done
 sudo systemctl daemon-reload
-sudo systemctl restart local-fs.target 2>/dev/null || true
+# Les montages _netdev dépendent de remote-fs.target (pas local-fs.target) : on démarre explicitement leurs automounts,
+# sinon ils ne s'activeraient qu'au prochain redémarrage du serveur.
+for s in $SHARES; do sudo systemctl start "$(systemd-escape -p --suffix=automount "$MNT/$s")"; done
 
 echo "3. Test de lecture"
 for s in $SHARES; do

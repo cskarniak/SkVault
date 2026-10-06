@@ -17,10 +17,10 @@
  */
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { closeSync, openSync, readSync, realpathSync, statSync, statfsSync } from 'fs';
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync, statfsSync } from 'fs';
 import { opendir } from 'fs/promises';
 import { homedir, hostname, platform } from 'os';
-import { join, relative, sep } from 'path';
+import { join, relative, sep, win32 } from 'path';
 import { VOLUME_KINDS, type ScanFileDto } from '@skvault/shared';
 
 const BATCH = 2000;
@@ -28,6 +28,8 @@ const QUICK_CHUNK = 64 * 1024;
 const IGNORED_NAMES = new Set([
   '.DS_Store', '.Spotlight-V100', '.Trashes', '.fseventsd', '.TemporaryItems', '$RECYCLE.BIN',
   'System Volume Information', 'lost+found', '.git', 'node_modules',
+  // Windows : fichiers système volumineux à la racine des lecteurs
+  'pagefile.sys', 'hiberfil.sys', 'swapfile.sys', 'DumpStack.log.tmp',
 ]);
 
 /**
@@ -248,12 +250,32 @@ async function importDedup(sqlitePath: string) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Dossiers scannables par défaut : le dossier personnel et là où les disques se montent. */
+function defaultRoots(): string[] {
+  if (platform() === 'win32') {
+    // Lecteurs présents (C:\, D:\…, y compris lecteurs réseau mappés)
+    const drives = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].map((l) => `${l}:\\`).filter((d) => existsSync(d));
+    return [homedir(), ...drives];
+  }
+  return [homedir(), '/Volumes', '/mnt', '/media', '/run/media'];
+}
+
 function allowedRoots(): string[] {
   const raw = arg('allow') ?? process.env['SKVAULT_ALLOWED_ROOTS'];
-  const roots = raw ? raw.split(/[,:]/).filter(Boolean) : [homedir(), '/Volumes', '/mnt', '/media', '/run/media'];
+  // Le « : » des lecteurs Windows interdit ce séparateur sous Windows : « ; » ou « , »
+  const roots = raw ? raw.split(platform() === 'win32' ? /[;,]/ : /[,:]/).filter(Boolean) : defaultRoots();
   return roots.flatMap((r) => {
     try { return [realpathSync(r)]; } catch { return []; }
   });
+}
+
+/** `real` est-il `root` ou un descendant ? Sous Windows : séparateur « \\ » et casse ignorée. */
+function isUnderRoot(real: string, root: string, windows = platform() === 'win32'): boolean {
+  const pathSep = windows ? win32.sep : sep;
+  const norm = (p: string) => (windows ? p.toLowerCase() : p);
+  const r = norm(root.endsWith(pathSep) ? root : root + pathSep); // « D:\ » se termine déjà par un séparateur
+  const x = norm(real.endsWith(pathSep) ? real : real + pathSep);
+  return x.startsWith(r);
 }
 
 /** Refuse tout chemin hors des dossiers autorisés (liens symboliques résolus). */
@@ -265,7 +287,7 @@ function checkAllowed(path: string, roots: string[]): string {
     throw new Error(`Chemin introuvable sur cette machine : ${path} (disque non branché ?)`);
   }
   if (!statSync(real).isDirectory()) throw new Error(`Ce n'est pas un dossier : ${path}`);
-  if (!roots.some((r) => real === r || real.startsWith(r + sep))) {
+  if (!roots.some((r) => isUnderRoot(real, r))) {
     throw new Error(`Chemin hors des dossiers autorisés sur cette machine (${roots.join(', ')})`);
   }
   return real;

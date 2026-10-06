@@ -1,5 +1,9 @@
 # Agent SkVault — installation sur une machine à scanner
 
+**Méthode simple : depuis l'interface web.** Onglet **Scans → Ajouter une machine** : SkVault génère une commande à coller dans
+le terminal de la machine (Mac ou Linux, Node ≥ 20 requis). Elle installe l'agent et le démarre automatiquement. Ce qui suit est
+la méthode manuelle (développement, ou machine sans accès au serveur).
+
 L'agent tourne en veille sur chaque machine qui voit des disques (MacBook, vieux MacBook Linux, machine reliée à un NAS…).
 Il interroge l'API toutes les 3 s et exécute les scans demandés depuis l'onglet **Scans** de l'interface web.
 Il n'ouvre aucun port : seule la machine appelle le serveur. Lecture seule.
