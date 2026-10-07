@@ -123,6 +123,17 @@ export async function buildNeighborIndex(folder: string, tick?: (n: number) => P
   return idx;
 }
 
+/** Ce dossier est-il la racine d'un système de fichiers (disque monté) ? Alors son contenu est trop vaste pour être indexé comme « dossier de projet ». */
+export async function isMountPoint(dir: string): Promise<boolean> {
+  const up = resolve(dir, '..');
+  if (up === dir) return true; // racine du système de fichiers (« / », « D:\ »)
+  try {
+    return (await stat(dir)).dev !== (await stat(up)).dev;
+  } catch {
+    return true; // dans le doute on n'indexe pas
+  }
+}
+
 /** Retrouve la cible d'un lien dans le dossier du projet : même chemin relatif (suffixe d'au moins 2 niveaux) ou même nom seul. */
 export function matchNeighbor(target: string, idx: NeighborIndex): 'exact' | 'name' | null {
   const parts = target.split(/[\\/]+/).filter(Boolean).map((p) => p.toLowerCase());

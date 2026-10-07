@@ -23,7 +23,7 @@ import { opendir } from 'fs/promises';
 import { homedir, hostname, platform } from 'os';
 import { basename, dirname, join, relative, sep, win32 } from 'path';
 import { SCAN_MODES, VOLUME_KINDS, type BrowseResult, type ProjectDto, type ScanFileDto, type ScanMode } from '@skvault/shared';
-import { buildNeighborIndex, discoverLibraries, inspectLibrary, isLibraryDir, type NeighborIndex } from './fcp';
+import { buildNeighborIndex, discoverLibraries, inspectLibrary, isLibraryDir, isMountPoint, type NeighborIndex } from './fcp';
 
 const BATCH = 2000;
 const QUICK_CHUNK = 64 * 1024;
@@ -249,9 +249,10 @@ async function scanFcpArchive(
     console.log(`  Inspection : ${relPath || '(racine du disque)'}`);
     const base = inspected;
 
-    // Dossier du projet = dossier qui contient la bibliothèque. Si c'est la racine du disque, il est trop vaste pour être indexé.
+    // Dossier du projet = dossier qui contient la bibliothèque. Si c'est la racine d'un disque (point de montage), il est trop vaste
+    // pour être indexé ; un simple dossier (même scanné comme volume, ex. /Volumes/Disque/FACE_ME) l'est.
     const parent = dirname(lib);
-    const hasFolder = lib !== root && parent !== root && under(parent, root);
+    const hasFolder = lib !== root && under(lib, parent) && !(await isMountPoint(parent));
     let neighbors: NeighborIndex | undefined;
     if (hasFolder) {
       neighbors = neighborCache.get(parent);
