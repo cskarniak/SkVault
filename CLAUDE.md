@@ -36,6 +36,37 @@ Un volume = (machine, chemin racine). Types : internal, ssd, das, nas, backup, o
 Auth utilisateur : JWT, le tout premier compte se crée depuis `/login` puis l'inscription est fermée.
 L'interface ne supprime jamais de fichiers (consultation + recherche + doublons) ; « Retirer un volume » n'enlève que le catalogue.
 
+## Types de scan (fixés par volume)
+Deux types, **jamais mélangés sur un même volume** (`volumes.scan_mode`, mémorisé : « Rescanner » le réutilise sans rien redemander) :
+- **`duplicates`** : inventaire de tous les fichiers + détection de doublons (comportement historique, `file_entries`). Les photothèques
+  iPhoto/Photos (`*.photolibrary`, `*.photoslibrary`) sont **repérées mais non scannées** (le même fichier peut y exister plusieurs fois :
+  versions retouchées) : une ligne `projects` de type `photo_library`, traitement dédié à venir.
+- **`fcp_archive`** : aucun fichier catalogué ni haché ; les bibliothèques Final Cut sont repérées et inspectées, **une ligne par projet**
+  (`projects`, type `fcp_library`) avec verdict + rapport (JSON `FcpReport`). Onglet **Projets**.
+Changer le type d'un volume exige une confirmation (API : 409 `MODE_CHANGE` avec les effectifs ; web : fenêtre de confirmation ; CLI :
+`--force-mode-change`) et **supprime les données de l'ancien type**. Le type est obligatoire dans le formulaire pour un nouveau volume.
+Chaque volume porte aussi une **note** et un **emplacement physique** (« tiroir du bureau »), modifiables depuis la Vue d'ensemble.
+
+### Inspection des bibliothèques Final Cut (`apps/agent/src/fcp.ts`)
+- Détection par **fichier signature** `CurrentVersion.flexolibrary` OU extension `.fcpbundle` : sur un disque formaté Windows le paquet perd
+  son statut de bundle, et une bibliothèque peut occuper la racine du disque (observé sur `sav_EMMA`). Recherche en dossiers seulement,
+  profondeur 6, corbeille Windows et dossiers système ignorés. Une bibliothèque imbriquée devient un projet distinct.
+- Métadonnées seules (`lstat`), aucun contenu lu, aucun lien suivi. Catégories : médias originaux, transcodés, rendus, analyses, fichiers de
+  bibliothèque, modèles Motion, caches/temporaires/verrous/`._*`/corbeille, autres. « Inutile » : caches ; « régénérable » : rendus + analyses ;
+  « conditionnel » : transcodés (si les originaux sont présents) ; jamais les médias originaux. **Rien n'est jamais supprimé.**
+- **Médias « laissés sur place »** : Final Cut crée dans `Original Media` des liens symboliques vers des fichiers hors bibliothèque (autres disques,
+  autre ordinateur). Un lien dont la cible est HORS de la bibliothèque est une *dépendance externe* (regroupée par source : `/Volumes/NEW`,
+  `/Users/emma`…), pas un lien « cassé » ; « cassé » = cible DANS la bibliothèque et disparue.
+- Verdict (un seul niveau de gravité par avertissement) : `incomplete` si erreur (fichier de bibliothèque absent, événement sans
+  `CurrentVersion.fcpevent`, lien interne cassé, **dépendances externes introuvables depuis la machine qui scanne**) ; `to_check` si
+  avertissement (dépendances externes accessibles, média de taille nulle, élément illisible, aucun événement…) ; `complete` sinon.
+  Les infos (verrous `.lock`, `.fcpcache` vers un autre ordinateur, `._*`) n'ont pas d'effet sur le verdict.
+- **Limite assumée** : les bases `.flexolibrary`/`.fcpevent` sont des SQLite Core Data opaques (aucune table de médias lisible) : SkVault ne
+  peut pas savoir quels médias le projet *réclame*. « Complet » = structure correcte, aucun lien cassé, aucune dépendance externe manquante ;
+  seul Final Cut garantit l'ouverture. Plugins tiers et polices ne sont pas dans la bibliothèque.
+- Piste suivante : recouper les dépendances externes avec le catalogue (le média existe-t-il sur un autre volume scanné ?), et la comparaison
+  de deux copies d'un même projet.
+
 ## Scans lancés depuis le web (démon d'agent)
 `pnpm agent run` : l'agent reste en veille et **interroge** l'API (`/api/ingest/agent/*` : hello → heartbeat 10 s → poll 3 s →
 progress → finish) ; aucun port ouvert sur les machines scannées. L'onglet **Scans** crée des `ScanJob` (table `scan_jobs`)
@@ -89,6 +120,9 @@ le même volume). Idempotent. Vérifié : 48 405 fichiers, 4 004 groupes de doub
 - Le « dernier scan » d'un volume importé affiche la date de l'import, pas celle de l'ancien scan.
 
 ## Reste à faire (idées)
+- **Recherche (demandé le 2026-10-07, pour le lendemain)** : saisir une chaîne + choisir un opérateur « contient / commence par / finit par »
+  (aujourd'hui : « contient » uniquement, sur le chemin complet, `catalog.service.ts` → `search`). Points à trancher : porter sur le nom du
+  fichier ou le chemin complet (proposition : nom par défaut, option « chemin »), insensible à la casse (proposition : oui), échapper `%` `_` `\`.
 - Scans planifiés (cron côté API) ; vieux MacBooks : vérifier Node ≥ 20
 - Agents HTTPS : le certificat `skapps.pem` est auto-signé → `NODE_EXTRA_CA_CERTS=...` sur les machines agents
 - Actions sur doublons (marquer/déplacer), vue arborescente par volume, détection de photos par date EXIF

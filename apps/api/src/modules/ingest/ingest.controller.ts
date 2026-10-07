@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
-import { pushFilesSchema, pushHashesSchema, startScanSchema } from '@skvault/shared';
+import { pushFilesSchema, pushHashesSchema, pushProjectsSchema, startScanSchema } from '@skvault/shared';
 import { AgentGuard } from './agent.guard';
 import { IngestService } from './ingest.service';
 
@@ -19,6 +19,11 @@ export class IngestController {
   @Post(':id/files')
   files(@Param('id') id: string, @Body() body: unknown) {
     return this.service.pushFiles(id, pushFilesSchema.parse(body).files);
+  }
+
+  @Post(':id/projects')
+  projects(@Param('id') id: string, @Body() body: unknown) {
+    return this.service.pushProjects(id, pushProjectsSchema.parse(body).projects);
   }
 
   @Get(':id/pending-hashes')

@@ -6,14 +6,14 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconArrowUp, IconCheck, IconCopy, IconDeviceDesktopPlus, IconFolder, IconFolderSearch, IconPlayerPlay, IconX } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { VOLUME_KINDS, VOLUME_KIND_LABELS, type BrowseResult, type ScanJobStatus, type VolumeKind } from '@skvault/shared';
+import { SCAN_MODES, SCAN_MODE_LABELS, VOLUME_KINDS, VOLUME_KIND_LABELS, type BrowseResult, type ScanJobStatus, type ScanMode, type VolumeKind } from '@skvault/shared';
 import { useMemo, useState } from 'react';
 import api from '@/lib/api';
 
 interface Host { id: string; name: string; os: string | null; online: boolean; lastSeenAt: string | null; volumes: number }
 interface Job {
-  id: string; host: { name: string }; rootPath: string; label: string; status: ScanJobStatus;
-  phase: 'listing' | 'hashing' | null; filesSeen: number; cancelRequested: boolean; message: string | null;
+  id: string; host: { name: string }; rootPath: string; label: string; status: ScanJobStatus; mode: ScanMode;
+  phase: 'listing' | 'hashing' | 'inspecting' | null; filesSeen: number; cancelRequested: boolean; message: string | null;
   createdAt: string; startedAt: string | null; finishedAt: string | null;
 }
 
@@ -183,7 +183,7 @@ export default function ScansPage() {
   const qc = useQueryClient();
   const hosts = useQuery<Host[]>({ queryKey: ['hosts'], queryFn: () => api.get('/hosts').then((r) => r.data), refetchInterval: 5000 });
   const jobs = useQuery<Job[]>({ queryKey: ['scan-jobs'], queryFn: () => api.get('/scan-jobs').then((r) => r.data), refetchInterval: 3000 });
-  const volumes = useQuery<{ host: string; rootPath: string; label: string }[]>({
+  const volumes = useQuery<{ host: string; rootPath: string; label: string; scanMode: ScanMode }[]>({
     queryKey: ['volumes'], queryFn: () => api.get('/volumes').then((r) => r.data),
   });
 
@@ -193,6 +193,9 @@ export default function ScansPage() {
   const [rootPath, setRootPath] = useState('');
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<string>('other');
+  // Type de scan : choisi explicitement pour un nouveau volume ; prérempli (et mémorisé) pour un volume déjà connu.
+  const [modeChoice, setModeChoice] = useState<ScanMode | null>(null);
+  const [modeConflict, setModeConflict] = useState<string | null>(null);
 
   const host = hosts.data?.find((h) => h.id === hostId);
   const knownPaths = useMemo(
@@ -200,13 +203,28 @@ export default function ScansPage() {
     [volumes.data, host],
   );
 
+  const knownVolume = useMemo(
+    () => (volumes.data ?? []).find((v) => v.host === host?.name && v.rootPath === rootPath.trim()),
+    [volumes.data, host, rootPath],
+  );
+  const mode: ScanMode | null = modeChoice ?? knownVolume?.scanMode ?? null;
+  const changesMode = !!knownVolume && !!mode && knownVolume.scanMode !== mode;
+
   const launch = useMutation({
-    mutationFn: () => api.post('/scan-jobs', { hostId, rootPath: rootPath.trim(), label: label.trim() || rootPath.trim().split('/').filter(Boolean).pop(), kind }),
+    mutationFn: (confirmModeChange: boolean) => api.post('/scan-jobs', {
+      hostId, rootPath: rootPath.trim(), label: label.trim() || rootPath.trim().split(/[\\/]/).filter(Boolean).pop(), kind, mode, confirmModeChange,
+    }),
     onSuccess: () => {
+      setModeConflict(null);
       qc.invalidateQueries({ queryKey: ['scan-jobs'] });
+      qc.invalidateQueries({ queryKey: ['volumes'] });
       notifications.show({ message: host?.online ? 'Scan lancé' : 'Scan en attente : il démarrera au retour de l\'agent', color: host?.online ? 'teal' : 'yellow' });
     },
-    onError: (e) => notifications.show({ message: errorMessage(e), color: 'red' }),
+    onError: (e) => {
+      const data = (e as { response?: { data?: { code?: string; message?: string } } })?.response?.data;
+      if (data?.code === 'MODE_CHANGE') setModeConflict(data.message ?? 'Changer le type de ce volume supprimera ses données actuelles.');
+      else notifications.show({ message: errorMessage(e), color: 'red' });
+    },
   });
   const cancel = useMutation({
     mutationFn: (id: string) => api.post(`/scan-jobs/${id}/cancel`),
@@ -244,7 +262,7 @@ export default function ScansPage() {
 
       <Card withBorder>
         <Title order={4} mb="sm">Nouveau scan</Title>
-        <form onSubmit={(e) => { e.preventDefault(); launch.mutate(); }}>
+        <form onSubmit={(e) => { e.preventDefault(); if (mode) launch.mutate(false); }}>
           <Group align="flex-end" wrap="wrap">
             <Select label="Machine" required placeholder="Choisir" w={220}
               data={hosts.data?.map((h) => ({ value: h.id, label: `${h.name}${h.online ? '' : ' (hors ligne)'}` })) ?? []}
@@ -257,10 +275,36 @@ export default function ScansPage() {
             <TextInput label="Nom affiché" placeholder="(dernier dossier)" w={180} value={label} onChange={(e) => setLabel(e.currentTarget.value)} />
             <Select label="Type" w={160} allowDeselect={false} value={kind} onChange={(v) => setKind(v ?? 'other')}
               data={VOLUME_KINDS.map((k) => ({ value: k, label: VOLUME_KIND_LABELS[k as VolumeKind] }))} />
-            <Button type="submit" leftSection={<IconPlayerPlay size={16} />} loading={launch.isPending} disabled={!hostId}>Lancer</Button>
+            <Select label="Type de scan" required w={250} allowDeselect={false} placeholder="Choisir…" value={mode}
+              onChange={(v) => setModeChoice(v as ScanMode | null)}
+              description={knownVolume ? 'Mémorisé pour ce volume' : 'Fixé pour ce volume ensuite'}
+              data={SCAN_MODES.map((m) => ({ value: m, label: SCAN_MODE_LABELS[m] }))} />
+            <Button type="submit" leftSection={<IconPlayerPlay size={16} />} loading={launch.isPending} disabled={!hostId || !mode}>Lancer</Button>
           </Group>
         </form>
+        {mode === 'fcp_archive' && (
+          <Text size="xs" c="dimmed" mt="xs">
+            Archive de projets : aucun fichier n&apos;est catalogué ni haché. Les bibliothèques Final Cut sont repérées, leur structure vérifiée
+            (événements, médias, liens) et les fichiers inutiles chiffrés ; une ligne par projet apparaît dans « Projets ».
+          </Text>
+        )}
+        {mode === 'duplicates' && (
+          <Text size="xs" c="dimmed" mt="xs">
+            Doublons : tous les fichiers sont listés et comparés. Les photothèques iPhoto/Photos sont repérées mais leur contenu n&apos;est pas scanné.
+          </Text>
+        )}
+        {changesMode && <Text size="sm" c="orange" mt="xs">Ce volume est actuellement de type « {SCAN_MODE_LABELS[knownVolume!.scanMode]} » : le changer supprimera ses données actuelles (confirmation demandée).</Text>}
         {host && !host.online && <Text size="sm" c="yellow" mt="xs">Cet agent est hors ligne : le scan sera exécuté dès qu&apos;il se reconnectera.</Text>}
+        <Modal opened={!!modeConflict} onClose={() => setModeConflict(null)} title="Changer le type de ce volume ?">
+          <Stack>
+            <Text size="sm">{modeConflict}</Text>
+            <Text size="sm" c="dimmed">Les fichiers du disque ne sont pas touchés : seul le catalogue SkVault est concerné.</Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setModeConflict(null)}>Annuler</Button>
+              <Button color="red" loading={launch.isPending} onClick={() => launch.mutate(true)}>Changer le type et scanner</Button>
+            </Group>
+          </Stack>
+        </Modal>
         <BrowseModal host={host} opened={browseOpen} onClose={() => setBrowseOpen(false)}
           onPick={(p) => { setRootPath(p); if (!label.trim()) setLabel(p.split(/[\\/]/).filter(Boolean).pop() ?? p); }} />
         <Text size="xs" c="dimmed" mt="xs">L&apos;agent ne scanne que sous ses dossiers autorisés (par défaut : dossier personnel et disques ; /Volumes, /mnt, /media sous macOS/Linux, lecteurs sous Windows). Lecture seule.</Text>
@@ -275,11 +319,11 @@ export default function ScansPage() {
             <Table.Tbody>
               {jobs.data?.map((j) => (
                 <Table.Tr key={j.id}>
-                  <Table.Td><Text fw={500}>{j.label}</Text><Text size="xs" c="dimmed">{j.rootPath}</Text></Table.Td>
+                  <Table.Td><Text fw={500}>{j.label}</Text><Text size="xs" c="dimmed">{j.rootPath}</Text><Badge size="xs" variant="outline" mt={2}>{SCAN_MODE_LABELS[j.mode] ?? j.mode}</Badge></Table.Td>
                   <Table.Td>{j.host.name}</Table.Td>
                   <Table.Td>
                     <Badge color={STATUS[j.status].color}>{j.cancelRequested && j.status === 'running' ? 'Annulation…' : STATUS[j.status].label}</Badge>
-                    {j.status === 'running' && j.phase && <Text size="xs" c="dimmed">{j.phase === 'listing' ? 'Inventaire' : 'Calcul des empreintes'}</Text>}
+                    {j.status === 'running' && j.phase && <Text size="xs" c="dimmed">{j.phase === 'listing' ? 'Inventaire' : j.phase === 'inspecting' ? 'Inspection des bibliothèques' : 'Calcul des empreintes'}</Text>}
                     {j.message && j.status !== 'running' && <Text size="xs" c={j.status === 'failed' ? 'red' : 'dimmed'}>{j.message}</Text>}
                   </Table.Td>
                   <Table.Td>{j.filesSeen ? j.filesSeen.toLocaleString('fr-FR') : '—'}</Table.Td>

@@ -46,12 +46,19 @@ model Volume {
   totalBytes BigInt?   @map("total_bytes")
   freeBytes  BigInt?   @map("free_bytes")
   lastScanAt DateTime? @map("last_scan_at")
+  /// Type du disque, fixé : `duplicates` (inventaire + détection de doublons) ou `fcp_archive` (archive de projets
+  /// Final Cut : une ligne par projet, aucun fichier catalogué). Jamais mélangés sur un même volume.
+  scanMode   String    @default("duplicates") @map("scan_mode")
+  /// Notes libres et emplacement physique du disque (« tiroir du bureau »)
+  note             String?
+  physicalLocation String? @map("physical_location")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
-  host  Host        @relation(fields: [hostId], references: [id], onDelete: Cascade)
-  files FileEntry[]
-  scans ScanRun[]
+  host     Host        @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  files    FileEntry[]
+  scans    ScanRun[]
+  projects Project[]
 
   @@unique([hostId, rootPath])
   @@map("volumes")
@@ -65,6 +72,10 @@ model ScanJob {
   rootPath        String    @map("root_path")
   label           String
   kind            String    @default("other")
+  /// Type de scan demandé : duplicates | fcp_archive
+  mode            String    @default("duplicates")
+  /// L'utilisateur a confirmé le changement de type du volume (les données de l'ancien type seront supprimées)
+  confirmModeChange Boolean @default(false) @map("confirm_mode_change")
   /// queued | running | done | failed | cancelled
   status          String    @default("queued")
   /// listing | hashing
@@ -86,6 +97,8 @@ model ScanJob {
 model ScanRun {
   id         String    @id @default(uuid())
   volumeId   String    @map("volume_id")
+  /// Type de scan exécuté (historique) : duplicates | fcp_archive
+  mode       String    @default("duplicates")
   /// running | done | failed
   status     String    @default("running")
   filesSeen  Int       @default(0) @map("files_seen")
@@ -156,4 +169,32 @@ model BrowseRequest {
 
   @@index([hostId, status])
   @@map("browse_requests")
+}
+
+/// Élément « un seul bloc » d'un volume : bibliothèque Final Cut (volumes `fcp_archive`, inspectée sans lister ses
+/// fichiers) ou photothèque iPhoto/Photos (repérée en mode `duplicates`, contenu volontairement non scanné).
+model Project {
+  id         String    @id @default(uuid())
+  volumeId   String    @map("volume_id")
+  /// fcp_library | photo_library
+  kind       String
+  name       String
+  /// Chemin relatif à la racine du volume ('' = la racine du volume est elle-même la bibliothèque)
+  relPath    String    @map("rel_path")
+  size       BigInt?
+  fileCount  Int?      @map("file_count")
+  mtime      DateTime?
+  /// complete | to_check | incomplete (bibliothèques Final Cut uniquement)
+  verdict    String?
+  /// Rapport d'inspection (catégories, événements, liens, avertissements) — voir FcpReport dans @skvault/shared
+  report     Json?
+  lastScanId String?   @map("last_scan_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  volume Volume @relation(fields: [volumeId], references: [id], onDelete: Cascade)
+
+  @@unique([volumeId, relPath])
+  @@index([name])
+  @@map("projects")
 }

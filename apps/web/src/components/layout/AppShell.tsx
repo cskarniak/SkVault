@@ -2,7 +2,7 @@
 
 import { ActionIcon, AppShell as MantineAppShell, Burger, Group, NavLink, Title, Tooltip } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { IconApps, IconCopy, IconLayoutGrid, IconLogout, IconRadar, IconSearch } from '@tabler/icons-react';
+import { IconApps, IconArchive, IconCopy, IconLayoutGrid, IconLogout, IconRadar, IconSearch } from '@tabler/icons-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
@@ -15,6 +15,7 @@ const NAV = [
   { label: 'Scans', href: '/scans', icon: IconRadar },
   { label: 'Recherche', href: '/recherche', icon: IconSearch },
   { label: 'Doublons', href: '/doublons', icon: IconCopy },
+  { label: 'Projets', href: '/projets', icon: IconArchive },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

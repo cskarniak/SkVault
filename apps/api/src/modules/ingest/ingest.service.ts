@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@skvault/db';
-import type { PushHashesDto, ScanFileDto, StartScanDto } from '@skvault/shared';
+import { SCAN_MODE_LABELS, type ProjectDto, type PushHashesDto, type ScanFileDto, type ScanMode, type StartScanDto } from '@skvault/shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { extname } from 'path';
 
@@ -8,6 +8,11 @@ import { extname } from 'path';
 export class IngestService {
   constructor(private prisma: PrismaService) {}
 
+  /**
+   * Démarre un scan. Le type de scan est FIXÉ par volume : sans `mode` on suit celui du volume (« duplicates » pour un
+   * nouveau volume) ; avec un autre `mode`, il faut `allowModeChange` (confirmé par l'utilisateur) et les données de
+   * l'ancien type sont supprimées — jamais de mélange sur un même volume.
+   */
   async start(dto: StartScanDto) {
     const host = await this.prisma.host.upsert({
       where: { name: dto.hostName },
@@ -15,16 +20,65 @@ export class IngestService {
       update: { os: dto.os },
     });
     const v = dto.volume;
+    const existing = await this.prisma.volume.findUnique({
+      where: { hostId_rootPath: { hostId: host.id, rootPath: v.rootPath } },
+    });
+
+    let mode: ScanMode = (existing?.scanMode as ScanMode | undefined) ?? dto.mode ?? 'duplicates';
+    if (existing && dto.mode && dto.mode !== existing.scanMode) {
+      if (!dto.allowModeChange) {
+        const [files, projects] = await Promise.all([
+          this.prisma.fileEntry.count({ where: { volumeId: existing.id } }),
+          this.prisma.project.count({ where: { volumeId: existing.id } }),
+        ]);
+        throw new ConflictException({
+          statusCode: 409, error: 'Conflict', code: 'MODE_CHANGE', files, projects,
+          message: `Ce volume est de type « ${SCAN_MODE_LABELS[existing.scanMode as ScanMode]} » : le passer en « ${SCAN_MODE_LABELS[dto.mode]} » supprimera ses données actuelles (${files} fichier(s), ${projects} projet(s)).`,
+        });
+      }
+      mode = dto.mode;
+      await this.purgeForMode(existing.id, mode);
+    }
+
     const volume = await this.prisma.volume.upsert({
       where: { hostId_rootPath: { hostId: host.id, rootPath: v.rootPath } },
       create: {
-        hostId: host.id, label: v.label, rootPath: v.rootPath, kind: v.kind,
+        hostId: host.id, label: v.label, rootPath: v.rootPath, kind: v.kind, scanMode: mode,
         totalBytes: v.totalBytes, freeBytes: v.freeBytes,
       },
-      update: { label: v.label, kind: v.kind, totalBytes: v.totalBytes, freeBytes: v.freeBytes },
+      update: { label: v.label, kind: v.kind, scanMode: mode, totalBytes: v.totalBytes, freeBytes: v.freeBytes },
     });
-    const scan = await this.prisma.scanRun.create({ data: { volumeId: volume.id } });
-    return { scanId: scan.id, volumeId: volume.id };
+    const scan = await this.prisma.scanRun.create({ data: { volumeId: volume.id, mode } });
+    return { scanId: scan.id, volumeId: volume.id, mode };
+  }
+
+  /** Supprime les données de l'AUTRE type : fichiers + photothèques (vers « archive »), bibliothèques Final Cut (vers « doublons »). */
+  private async purgeForMode(volumeId: string, newMode: ScanMode) {
+    if (newMode === 'fcp_archive') {
+      await this.prisma.fileEntry.deleteMany({ where: { volumeId } });
+      await this.prisma.project.deleteMany({ where: { volumeId, kind: 'photo_library' } });
+    } else {
+      await this.prisma.project.deleteMany({ where: { volumeId, kind: 'fcp_library' } });
+    }
+  }
+
+  /** Enregistre des projets (bibliothèques Final Cut inspectées, photothèques repérées) : upsert par (volume, chemin). */
+  async pushProjects(scanId: string, projects: ProjectDto[]) {
+    const scan = await this.getRunningScan(scanId);
+    for (const p of projects) {
+      const data = {
+        kind: p.kind, name: p.name, size: p.size !== undefined ? BigInt(Math.round(p.size)) : null,
+        fileCount: p.fileCount ?? null, mtime: p.mtime ? new Date(p.mtime) : null, verdict: p.verdict ?? null,
+        report: (p.report ?? undefined) as Prisma.InputJsonValue | undefined, lastScanId: scanId,
+      };
+      await this.prisma.project.upsert({
+        where: { volumeId_relPath: { volumeId: scan.volumeId, relPath: p.relPath } },
+        create: { volumeId: scan.volumeId, relPath: p.relPath, ...data },
+        update: data,
+      });
+    }
+    await this.prisma.scanRun.update({ where: { id: scanId }, data: { filesSeen: { increment: projects.length } } });
+    return { received: projects.length };
   }
 
   /** Upsert par lot. Hash complet invalidé si la taille ou la date a changé. */
@@ -87,11 +141,24 @@ export class IngestService {
     return { updated };
   }
 
-  /** Supprime du catalogue les fichiers non revus par ce scan (effacés ou déplacés sur le disque). */
+  /**
+   * Termine le scan : retire du catalogue ce qui n'a pas été revu (effacé/déplacé sur le disque).
+   * « doublons » : fichiers + photothèques ; « archive » : projets uniquement.
+   */
   async finish(scanId: string) {
     const scan = await this.getRunningScan(scanId);
-    const removed = await this.prisma.$executeRaw`
-      DELETE FROM file_entries WHERE volume_id = ${scan.volumeId} AND last_scan_id IS DISTINCT FROM ${scanId}`;
+    let removed = 0;
+    if (scan.mode === 'fcp_archive') {
+      removed = (await this.prisma.project.deleteMany({
+        where: { volumeId: scan.volumeId, OR: [{ lastScanId: null }, { lastScanId: { not: scanId } }] },
+      })).count;
+    } else {
+      removed = await this.prisma.$executeRaw`
+        DELETE FROM file_entries WHERE volume_id = ${scan.volumeId} AND last_scan_id IS DISTINCT FROM ${scanId}`;
+      await this.prisma.project.deleteMany({
+        where: { volumeId: scan.volumeId, kind: 'photo_library', OR: [{ lastScanId: null }, { lastScanId: { not: scanId } }] },
+      });
+    }
     const now = new Date();
     await this.prisma.$transaction([
       this.prisma.scanRun.update({

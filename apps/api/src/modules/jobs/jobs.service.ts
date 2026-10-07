@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, GatewayTimeoutException, Injectable, NotFoundException } from '@nestjs/common';
-import type { BrowseResult, CreateScanJobDto } from '@skvault/shared';
+import { SCAN_MODE_LABELS, type BrowseResult, type CreateScanJobDto, type ScanMode } from '@skvault/shared';
 import { Prisma } from '@skvault/db';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -9,7 +9,7 @@ const BROWSE_LONGPOLL_MS = 20_000; // attente d'une demande côté agent (répon
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Identity { hostName: string; os?: string }
-interface Progress { phase: 'listing' | 'hashing'; filesSeen: number; scanId?: string }
+interface Progress { phase: 'listing' | 'hashing' | 'inspecting'; filesSeen: number; scanId?: string }
 interface Finish { status: 'done' | 'failed' | 'cancelled'; message?: string; filesSeen?: number }
 
 @Injectable()
@@ -45,15 +45,36 @@ export class JobsService {
       where: { hostId: dto.hostId, rootPath: dto.rootPath, status: { in: ['queued', 'running'] } },
     });
     if (active) throw new ConflictException('Un scan de ce chemin est déjà en attente ou en cours');
+
+    // Le type d'un volume est fixé : en changer exige une confirmation explicite (les données de l'ancien type seront supprimées).
+    const volume = await this.prisma.volume.findUnique({
+      where: { hostId_rootPath: { hostId: dto.hostId, rootPath: dto.rootPath } },
+    });
+    if (volume && volume.scanMode !== dto.mode && !dto.confirmModeChange) {
+      const [files, projects] = await Promise.all([
+        this.prisma.fileEntry.count({ where: { volumeId: volume.id } }),
+        this.prisma.project.count({ where: { volumeId: volume.id } }),
+      ]);
+      throw new ConflictException({
+        statusCode: 409, error: 'Conflict', code: 'MODE_CHANGE', files, projects,
+        message: `Ce volume est de type « ${SCAN_MODE_LABELS[volume.scanMode as ScanMode]} ». Le passer en « ${SCAN_MODE_LABELS[dto.mode]} » supprimera ses données actuelles : ${files.toLocaleString('fr-FR')} fichier(s) catalogué(s), ${projects} projet(s).`,
+      });
+    }
     return this.prisma.scanJob.create({
-      data: { hostId: dto.hostId, rootPath: dto.rootPath, label: dto.label, kind: dto.kind },
+      data: {
+        hostId: dto.hostId, rootPath: dto.rootPath, label: dto.label, kind: dto.kind,
+        mode: dto.mode, confirmModeChange: !!dto.confirmModeChange,
+      },
     });
   }
 
+  /** « Rescanner » : réutilise le type enregistré du volume, sans rien redemander. */
   async rescan(volumeId: string) {
     const v = await this.prisma.volume.findUnique({ where: { id: volumeId } });
     if (!v) throw new NotFoundException('Volume inconnu');
-    return this.enqueue({ hostId: v.hostId, rootPath: v.rootPath, label: v.label, kind: v.kind as CreateScanJobDto['kind'] });
+    return this.enqueue({
+      hostId: v.hostId, rootPath: v.rootPath, label: v.label, kind: v.kind as CreateScanJobDto['kind'], mode: v.scanMode as ScanMode,
+    });
   }
 
   async cancel(id: string) {
@@ -123,13 +144,17 @@ export class JobsService {
   /** Réserve atomiquement le plus ancien job en attente de cette machine. */
   async agentPoll(identity: Identity) {
     const host = await this.touchHost(identity);
-    const rows = await this.prisma.$queryRaw<{ id: string; root_path: string; label: string; kind: string }[]>`
+    const rows = await this.prisma.$queryRaw<
+      { id: string; root_path: string; label: string; kind: string; mode: string; confirm_mode_change: boolean }[]
+    >`
       UPDATE scan_jobs SET status = 'running', started_at = now(), phase = NULL, files_seen = 0
       WHERE id = (SELECT id FROM scan_jobs WHERE host_id = ${host.id} AND status = 'queued'
                   ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-      RETURNING id, root_path, label, kind`;
+      RETURNING id, root_path, label, kind, mode, confirm_mode_change`;
     const j = rows[0];
-    return { job: j ? { id: j.id, rootPath: j.root_path, label: j.label, kind: j.kind } : null };
+    return {
+      job: j ? { id: j.id, rootPath: j.root_path, label: j.label, kind: j.kind, mode: j.mode, confirmModeChange: j.confirm_mode_change } : null,
+    };
   }
 
   async agentProgress(id: string, p: Progress) {

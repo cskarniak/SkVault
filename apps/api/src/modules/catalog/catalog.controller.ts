@@ -1,5 +1,6 @@
-import { Controller, Delete, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { patchVolumeSchema } from '@skvault/shared';
 import { JwtGuard } from '../auth/jwt.guard';
 import { CatalogService } from './catalog.service';
 
@@ -18,6 +19,27 @@ export class CatalogController {
   @Get('volumes')
   volumes() {
     return this.service.volumes();
+  }
+
+  @Patch('volumes/:id')
+  patchVolume(@Param('id') id: string, @Body() body: unknown) {
+    return this.service.patchVolume(id, patchVolumeSchema.parse(body));
+  }
+
+  @Get('projects')
+  projects(
+    @Query('q') q?: string,
+    @Query('volumeId') volumeId?: string,
+    @Query('verdict') verdict?: string,
+    @Query('kind') kind?: string,
+    @Query('page') page?: string,
+  ) {
+    return this.service.projects({ q, volumeId, verdict, kind, page: page ? Math.max(1, Number(page)) : 1 });
+  }
+
+  @Get('projects/:id')
+  project(@Param('id') id: string) {
+    return this.service.project(id);
   }
 
   @Delete('volumes/:id')

@@ -1,7 +1,8 @@
 /**
  * Agent de scan SkVault — à lancer sur chaque machine qui voit des disques.
  *
- *   pnpm agent scan <chemin> --label "SSD Photos" --kind ssd [--host nom-machine]
+ *   pnpm agent scan <chemin> --label "SSD Photos" --kind ssd [--host nom-machine] [--mode duplicates|fcp_archive]
+ *     Le type de scan est fixé par volume ; en changer exige --force-mode-change (supprime les données de l'ancien type).
  *
  *   pnpm agent run [--host nom-machine] [--allow /Volumes,/mnt]
  *     Démon : reste en veille, interroge l'API et exécute les scans lancés depuis l'interface web.
@@ -20,8 +21,9 @@ import { createHash } from 'crypto';
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync, statfsSync } from 'fs';
 import { opendir } from 'fs/promises';
 import { homedir, hostname, platform } from 'os';
-import { dirname, join, relative, sep, win32 } from 'path';
-import { VOLUME_KINDS, type BrowseResult, type ScanFileDto } from '@skvault/shared';
+import { basename, dirname, join, relative, sep, win32 } from 'path';
+import { SCAN_MODES, VOLUME_KINDS, type BrowseResult, type ProjectDto, type ScanFileDto, type ScanMode } from '@skvault/shared';
+import { discoverLibraries, inspectLibrary, isLibraryDir } from './fcp';
 
 const BATCH = 2000;
 const QUICK_CHUNK = 64 * 1024;
@@ -84,7 +86,10 @@ async function fullHash(file: string): Promise<string> {
   return h.digest('hex');
 }
 
-async function* walk(dir: string): AsyncGenerator<string> {
+/** Photothèques iPhoto / Photos : le même fichier peut y exister plusieurs fois (versions retouchées) → jamais scannées en mode doublons. */
+const isPhotoLibraryName = (name: string) => /\.(photolibrary|photoslibrary)$/i.test(name);
+
+async function* walk(dir: string, onPackage?: (dir: string) => void): AsyncGenerator<string> {
   let handle;
   try {
     handle = await opendir(dir);
@@ -95,8 +100,10 @@ async function* walk(dir: string): AsyncGenerator<string> {
   for await (const entry of handle) {
     if (IGNORED_NAMES.has(entry.name) || entry.name.startsWith('._') || isExcludedName(entry.name)) continue;
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) yield* walk(full);
-    else if (entry.isFile()) yield full;
+    if (entry.isDirectory()) {
+      if (onPackage && isPhotoLibraryName(entry.name)) { onPackage(full); continue; }
+      yield* walk(full, onPackage);
+    } else if (entry.isFile()) yield full;
   }
 }
 
@@ -112,8 +119,12 @@ interface ScanOptions {
   label?: string;
   kind?: (typeof VOLUME_KINDS)[number];
   host?: string;
+  /** Type de scan ; absent = celui déjà enregistré pour ce volume (« doublons » pour un nouveau volume). */
+  mode?: ScanMode;
+  /** Changement de type confirmé par l'utilisateur (supprime les données de l'ancien type) */
+  allowModeChange?: boolean;
   /** Appelé régulièrement ; renvoie true si l'annulation a été demandée. */
-  report?: (p: { phase: 'listing' | 'hashing'; filesSeen: number; scanId: string }) => Promise<boolean>;
+  report?: (p: { phase: 'listing' | 'hashing' | 'inspecting'; filesSeen: number; scanId: string }) => Promise<boolean>;
 }
 
 async function scan(root: string, opts: ScanOptions = {}) {
@@ -129,20 +140,25 @@ async function scan(root: string, opts: ScanOptions = {}) {
     freeBytes = fs.bavail * fs.bsize;
   } catch { /* NAS / FS sans statfs : on s'en passe */ }
 
-  const { scanId } = await call<{ scanId: string }>('POST', '', {
+  const { scanId, mode } = await call<{ scanId: string; mode: ScanMode }>('POST', '', {
     hostName: opts.host ?? hostname(),
     os: platform(),
     volume: { label, rootPath: root, kind, totalBytes, freeBytes },
+    mode: opts.mode,
+    allowModeChange: opts.allowModeChange,
   });
-  console.log(`Scan ${scanId} — ${label} (${root})`);
+  console.log(`Scan ${scanId} — ${label} (${root}) — type : ${mode === 'fcp_archive' ? 'archive de projets Final Cut' : 'doublons'}`);
 
   let lastReport = 0;
-  const tick = async (phase: 'listing' | 'hashing', filesSeen: number) => {
+  const tick = async (phase: 'listing' | 'hashing' | 'inspecting', filesSeen: number) => {
     if (!opts.report || Date.now() - lastReport < 2000) return;
     lastReport = Date.now();
     if (await opts.report({ phase, filesSeen, scanId })) throw new CancelledError('Annulé');
   };
 
+  if (mode === 'fcp_archive') return scanFcpArchive(root, scanId, label, tick);
+
+  const photoLibraries: string[] = [];
   let batch: ScanFileDto[] = [];
   let seen = 0;
   const flush = async () => {
@@ -150,7 +166,7 @@ async function scan(root: string, opts: ScanOptions = {}) {
     batch = [];
   };
 
-  for await (const file of walk(root)) {
+  for await (const file of walk(root, (d) => photoLibraries.push(d))) {
     try {
       const st = statSync(file);
       batch.push({
@@ -171,6 +187,16 @@ async function scan(root: string, opts: ScanOptions = {}) {
   }
   await flush();
   console.log(`\r  ${seen} fichiers listés.`);
+
+  // Photothèques repérées : une seule ligne chacune (nom, chemin), contenu volontairement non scanné.
+  if (photoLibraries.length) {
+    const projects: ProjectDto[] = photoLibraries.map((d) => ({
+      kind: 'photo_library', name: basename(d).replace(/\.(photolibrary|photoslibrary)$/i, ''),
+      relPath: relative(root, d).split(sep).join('/'), mtime: statSync(d).mtime.toISOString(),
+    }));
+    await call('POST', `/${scanId}/projects`, { projects });
+    console.log(`  ${projects.length} photothèque(s) repérée(s), non scannée(s) : ${projects.map((p) => p.name).join(', ')}`);
+  }
 
   // Hash complet des seuls candidats doublons (même taille + quickHash qu'un autre fichier du catalogue).
   for (;;) {
@@ -193,7 +219,52 @@ async function scan(root: string, opts: ScanOptions = {}) {
 
   const result = await call<{ filesSeen: number; filesRemoved: number }>('POST', `/${scanId}/finish`);
   console.log(`Terminé : ${result.filesSeen} fichiers, ${result.filesRemoved} retirés du catalogue.`);
-  return result;
+  return { ...result, mode };
+}
+
+/**
+ * Mode « archive de projets Final Cut » : aucun fichier n'est listé ni haché. On repère les bibliothèques (signature ou
+ * .fcpbundle), on les inspecte en métadonnées seules, et on enregistre UNE ligne par projet avec son verdict.
+ */
+async function scanFcpArchive(
+  root: string, scanId: string, label: string,
+  tick: (phase: 'listing' | 'hashing' | 'inspecting', filesSeen: number) => Promise<void>,
+) {
+  const rel = (abs: string) => relative(root, abs).split(sep).join('/');
+  const queue: string[] = [];
+  const known = new Set<string>();
+  const enqueue = (d: string) => { if (!known.has(d)) { known.add(d); queue.push(d); } };
+
+  console.log('  Recherche des bibliothèques Final Cut…');
+  for await (const d of discoverLibraries(root, 6, (n) => tick('inspecting', n))) enqueue(d);
+
+  let projects = 0;
+  let inspected = 0;
+  while (queue.length) {
+    const lib = queue.shift()!;
+    const relPath = rel(lib);
+    console.log(`  Inspection : ${relPath || '(racine du disque)'}`);
+    const base = inspected;
+    const r = await inspectLibrary(lib, { tick: (n) => tick('inspecting', base + n), isNestedLibrary: isLibraryDir });
+    inspected += r.fileCount;
+    r.nested.forEach(enqueue); // bibliothèques imbriquées : projets distincts
+    r.report.nestedLibraries = r.nested.map(rel);
+    const name = relPath === '' ? label : basename(lib).replace(/\.fcpbundle$/i, '');
+    await call('POST', `/${scanId}/projects`, {
+      projects: [{
+        kind: 'fcp_library', name, relPath, size: r.size, fileCount: r.fileCount,
+        mtime: r.mtimeMs > 0 ? new Date(r.mtimeMs).toISOString() : undefined, verdict: r.verdict, report: r.report,
+      } satisfies ProjectDto],
+    });
+    projects++;
+    const w = r.report.warnings.filter((x) => x.level !== 'info').length;
+    console.log(`    → ${r.verdict}${w ? ` (${w} avertissement(s))` : ''}, ${(r.size / 1e9).toFixed(1)} Go, ${r.fileCount} fichiers`);
+  }
+  if (projects === 0) console.warn('  Aucune bibliothèque Final Cut trouvée sur ce volume (profondeur de recherche : 6 niveaux).');
+
+  const result = await call<{ filesSeen: number; filesRemoved: number }>('POST', `/${scanId}/finish`);
+  console.log(`Terminé : ${projects} projet(s), ${result.filesRemoved} retiré(s) du catalogue.`);
+  return { ...result, mode: 'fcp_archive' as ScanMode };
 }
 
 /** Import de l'ancien index `dedup.sqlite` : un volume par `dir_root`, fichiers poussés par le protocole habituel. */
@@ -370,7 +441,7 @@ async function runDaemon() {
 
   for (;;) {
     try {
-      const { job } = await agentCall<{ job: { id: string; rootPath: string; label: string; kind: string } | null }>(
+      const { job } = await agentCall<{ job: { id: string; rootPath: string; label: string; kind: string; mode?: string; confirmModeChange?: boolean } | null }>(
         '/poll', identity,
       );
       if (job) await runJob(job, hostName, roots);
@@ -381,7 +452,7 @@ async function runDaemon() {
   }
 }
 
-async function runJob(job: { id: string; rootPath: string; label: string; kind: string }, host: string, roots: string[]) {
+async function runJob(job: { id: string; rootPath: string; label: string; kind: string; mode?: string; confirmModeChange?: boolean }, host: string, roots: string[]) {
   console.log(`\n▶ Scan demandé depuis le web : ${job.label} (${job.rootPath})`);
   const finish = (status: 'done' | 'failed' | 'cancelled', message?: string, filesSeen?: number) =>
     agentCall(`/jobs/${job.id}/finish`, { status, message: message?.slice(0, 1000), filesSeen }).catch((e) =>
@@ -392,11 +463,19 @@ async function runJob(job: { id: string; rootPath: string; label: string; kind: 
     const result = await scan(root, {
       label: job.label,
       kind: job.kind as ScanOptions['kind'],
+      mode: job.mode as ScanMode | undefined,
+      allowModeChange: job.confirmModeChange,
       host,
       report: async (p) =>
         (await agentCall<{ cancel: boolean }>(`/jobs/${job.id}/progress`, p)).cancel,
     });
-    await finish('done', `${result.filesSeen} fichiers, ${result.filesRemoved} retirés du catalogue`, result.filesSeen);
+    await finish(
+      'done',
+      result.mode === 'fcp_archive'
+        ? `${result.filesSeen} projet(s) inspecté(s), ${result.filesRemoved} retiré(s) du catalogue`
+        : `${result.filesSeen} fichiers, ${result.filesRemoved} retirés du catalogue`,
+      result.filesSeen,
+    );
   } catch (e) {
     if (e instanceof CancelledError) {
       console.log('  Annulé.');
@@ -420,10 +499,17 @@ if (cmd === 'run') {
     process.exit(1);
   });
 } else if (cmd === 'scan' && path && statSync(path, { throwIfNoEntry: false })?.isDirectory()) {
+  const modeArg = arg('mode');
+  if (modeArg && !(SCAN_MODES as readonly string[]).includes(modeArg)) {
+    console.error(`--mode doit valoir : ${SCAN_MODES.join(' | ')}`);
+    process.exit(1);
+  }
   scan(path, {
     label: arg('label'),
     kind: arg('kind') as ScanOptions['kind'],
     host: arg('host'),
+    mode: modeArg as ScanMode | undefined,
+    allowModeChange: process.argv.includes('--force-mode-change'),
   }).catch((e) => {
     console.error(e);
     process.exit(1);
@@ -432,6 +518,7 @@ if (cmd === 'run') {
   console.error('Usage :');
   console.error('  pnpm agent run [--host nom] [--allow /Volumes,/mnt]   (démon : scans lancés depuis le web)');
   console.error('  pnpm agent scan <dossier> [--label "Nom"] [--kind ssd|das|nas|internal|backup|other] [--host nom]');
+  console.error('                       [--mode duplicates|fcp_archive] [--force-mode-change]   (sans --mode : type déjà enregistré du volume)');
   console.error('  pnpm agent import-dedup <dedup.sqlite> [--host nom] [--kind ...] [--skip-doublons] [--remap ancien=nouveau]');
   process.exit(1);
 }
