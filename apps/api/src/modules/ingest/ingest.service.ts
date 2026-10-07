@@ -2,11 +2,12 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { Prisma } from '@skvault/db';
 import { SCAN_MODE_LABELS, type ProjectDto, type PushHashesDto, type ScanFileDto, type ScanMode, type StartScanDto } from '@skvault/shared';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ProjectsService } from '../catalog/projects.service';
 import { extname } from 'path';
 
 @Injectable()
 export class IngestService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private projects: ProjectsService) {}
 
   /**
    * Démarre un scan. Le type de scan est FIXÉ par volume : sans `mode` on suit celui du volume (« duplicates » pour un
@@ -167,6 +168,8 @@ export class IngestService {
       }),
       this.prisma.volume.update({ where: { id: scan.volumeId }, data: { lastScanAt: now } }),
     ]);
+    // Le catalogue vient de changer : on recoupe les originaux de projets avec lui (sans bloquer la fin du scan).
+    void this.projects.recheckAll().catch(() => undefined);
     return { filesSeen: scan.filesSeen, filesRemoved: removed };
   }
 

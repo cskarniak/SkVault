@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@skvault/db';
 import type { FcpReport } from '@skvault/shared';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ProjectsService, type Resolution } from './projects.service';
 
 const PAGE_SIZE = 50;
 /** Clé d'identité d'un fichier : SHA-256 complet, à défaut MD5 hérité de l'ancien index (jamais mélangés). */
@@ -17,9 +18,15 @@ function reclaimable(report: FcpReport | null) {
   };
 }
 
+function slimReport(r: FcpReport | null): FcpReport | null {
+  if (!r) return r;
+  const { mediaKeys, missingOriginals, ...rest } = r;
+  return { ...rest, mediaKeys: undefined, missingOriginals: undefined, ...(mediaKeys ? { mediaKeysTruncated: r.mediaKeysTruncated } : {}) };
+}
+
 @Injectable()
 export class CatalogService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private projectsService: ProjectsService) {}
 
   async overview() {
     const [totals] = await this.prisma.$queryRaw<{ files: bigint; bytes: bigint | null }[]>`
@@ -93,6 +100,10 @@ export class CatalogService {
       items: rows.map((r) => ({
         id: r.id, kind: r.kind, name: r.name, relPath: r.relPath, size: r.size, fileCount: r.fileCount, mtime: r.mtime,
         verdict: r.verdict, updatedAt: r.updatedAt,
+        effectiveVerdict: this.projectsService.effectiveVerdict(r.verdict, r.report as unknown as FcpReport | null, r.resolution as unknown as Resolution | null),
+        originals: (r.report as unknown as FcpReport | null)?.originals ?? null,
+        lastEditMs: (r.report as unknown as FcpReport | null)?.lastEditMs ?? null,
+        foundElsewhere: ((r.resolution as unknown as Resolution | null)?.foundExact ?? 0) + ((r.resolution as unknown as Resolution | null)?.foundName ?? 0),
         volume: { id: r.volume.id, label: r.volume.label, host: r.volume.host.name, physicalLocation: r.volume.physicalLocation },
         reclaimable: reclaimable(r.report as unknown as FcpReport | null),
         warnings: ((r.report as unknown as FcpReport | null)?.warnings ?? []).filter((w) => w.level !== 'info').length,
@@ -108,7 +119,12 @@ export class CatalogService {
     if (!r) throw new NotFoundException('Projet introuvable');
     return {
       id: r.id, kind: r.kind, name: r.name, relPath: r.relPath, size: r.size, fileCount: r.fileCount, mtime: r.mtime,
-      verdict: r.verdict, updatedAt: r.updatedAt, report: r.report as unknown as FcpReport | null,
+      verdict: r.verdict, updatedAt: r.updatedAt,
+      // le rapport est renvoyé sans les empreintes ni la liste des cibles manquantes (volumineuses, usage interne)
+      report: slimReport(r.report as unknown as FcpReport | null),
+      resolution: r.resolution as unknown as Resolution | null,
+      effectiveVerdict: this.projectsService.effectiveVerdict(r.verdict, r.report as unknown as FcpReport | null, r.resolution as unknown as Resolution | null),
+      relations: r.kind === 'fcp_library' ? await this.projectsService.relationsOf(r.id) : [],
       volume: { id: r.volume.id, label: r.volume.label, rootPath: r.volume.rootPath, host: r.volume.host.name, physicalLocation: r.volume.physicalLocation },
     };
   }

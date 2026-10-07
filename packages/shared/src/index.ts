@@ -160,6 +160,21 @@ export interface FcpReport {
   warnings: { level: ReportLevel; code: string; message: string }[];
   /** Chemins (relatifs au volume) d'autres bibliothèques imbriquées, traitées comme projets distincts */
   nestedLibraries: string[];
+  /** Dossier du projet = dossier qui contient la bibliothèque (relatif au volume ; null si la bibliothèque est à la racine) */
+  projectFolder?: string | null;
+  /** Dernière modification des bases de données de la bibliothèque (ms) : l'état d'édition, pas les caches */
+  lastEditMs?: number | null;
+  /** Médias ORIGINAUX réclamés par la bibliothèque, selon où ils se trouvent */
+  originals?: { total: number; internal: number; reachable: number; neighborExact: number; neighborName: number; absent: number };
+  /** Proxys / médias optimisés : régénérables par Final Cut, hors verdict */
+  proxies?: { total: number; found: number; absent: number };
+  /** Liens vers des caches, analyses ou copies transitoires (`.fcpcache`, `__AsyncCopying`…) : sans valeur */
+  cacheLinks?: number;
+  /** Cibles des originaux introuvables (plafonné), pour les recouper avec le catalogue des autres disques */
+  missingOriginals?: string[];
+  /** Empreintes courtes (12 hex) des médias originaux, pour comparer deux bibliothèques ; plafonné */
+  mediaKeys?: string[];
+  mediaKeysTruncated?: boolean;
 }
 
 export const projectSchema = z.object({

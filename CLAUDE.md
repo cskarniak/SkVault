@@ -55,17 +55,33 @@ Chaque volume porte aussi une **note** et un **emplacement physique** (« tiroir
   bibliothèque, modèles Motion, caches/temporaires/verrous/`._*`/corbeille, autres. « Inutile » : caches ; « régénérable » : rendus + analyses ;
   « conditionnel » : transcodés (si les originaux sont présents) ; jamais les médias originaux. **Rien n'est jamais supprimé.**
 - **Médias « laissés sur place »** : Final Cut crée dans `Original Media` des liens symboliques vers des fichiers hors bibliothèque (autres disques,
-  autre ordinateur). Un lien dont la cible est HORS de la bibliothèque est une *dépendance externe* (regroupée par source : `/Volumes/NEW`,
-  `/Users/emma`…), pas un lien « cassé » ; « cassé » = cible DANS la bibliothèque et disparue.
-- Verdict (un seul niveau de gravité par avertissement) : `incomplete` si erreur (fichier de bibliothèque absent, événement sans
-  `CurrentVersion.fcpevent`, lien interne cassé, **dépendances externes introuvables depuis la machine qui scanne**) ; `to_check` si
-  avertissement (dépendances externes accessibles, média de taille nulle, élément illisible, aucun événement…) ; `complete` sinon.
-  Les infos (verrous `.lock`, `.fcpcache` vers un autre ordinateur, `._*`) n'ont pas d'effet sur le verdict.
+  autre ordinateur). Chaque lien est classé : **original** (dans `Original Media`), **proxy/optimisé** (`Transcoded Media`, « Proxy Media » :
+  régénérable, hors verdict), **cache** (`__AsyncCopying`, `.fcpcache`, Analysis/Render Files : sans valeur) ou autre. « Cassé » = lien DANS
+  la bibliothèque dont la cible a disparu ; un lien externe est une *dépendance*, regroupée par source (`/Volumes/NEW`, `/Users/emma`…).
+- **Dossier du projet** = dossier qui contient la bibliothèque (pas la bibliothèque seule : `FACE_ME/` = `FACE ME.fcpbundle` + dossier `FACE ME`).
+  Ses FICHIERS RÉELS sont indexés une fois (`buildNeighborIndex`) ; **exclus** : liens symboliques, caches, et le contenu de toute autre
+  bibliothèque (même sans extension `.fcpbundle`) — sinon deux bibliothèques voisines se « retrouvent » mutuellement par leurs liens (bug corrigé).
+  Un original est résolu dans l'ordre : fichier accessible ici → retrouvé à côté (`exact` = même chemin relatif sur ≥ 2 niveaux ; `nom` = même
+  nom seul, **probable**, taille invérifiable car la cible est absente) → introuvable. Non fait si la bibliothèque est à la racine du disque.
+- **Verdict** (sur les ORIGINAUX seuls) : `incomplete` si erreur (fichier de bibliothèque absent, événement sans `CurrentVersion.fcpevent`, lien
+  interne cassé, **originaux introuvables** `originals_absent`) ; `to_check` si avertissement (originaux accessibles hors bibliothèque, retrouvés
+  par le nom seul, média de taille nulle, élément illisible, aucun événement…) ; `complete` sinon. Les infos (verrous, `.fcpcache`, `._*`, proxys
+  absents, caches) n'ont pas d'effet.
+- **Recoupement avec le catalogue** (`ProjectsService.crossCheck`, lancé après CHAQUE scan et par le bouton « Recouper avec le catalogue ») : les
+  originaux introuvables (`report.missingOriginals`, ≤ 5 000) sont cherchés dans `file_entries` des AUTRES volumes (index `lower(name)`) ; résultat
+  dans `projects.resolution`. **Verdict ajusté** (`effectiveVerdict`) : « incomplet » seulement à cause d'originaux manquants → « à vérifier » si
+  le catalogue les retrouve tous (projet dispersé, pas perdu). Le verdict stocké par le scan n'est jamais modifié.
+- **Relations entre bibliothèques** (`catalog/relations.ts`, calculées à la lecture) : comparaison des empreintes des médias originaux
+  (`report.mediaKeys`, 12 hex = SHA-1 des 2 derniers segments). **réplique** : ≥ 99 % de chaque côté ; **contenue** : l'une retrouvée à ≥ 95 % dans
+  l'autre qui en a plus ; **recoupement** : Jaccard ≥ 20 % ; **complément** : même dossier de projet, médias distincts. « Plus récente » = date max
+  des bases (`flexolibrary`, `fcpevent`, `Settings.plist` ; `report.lastEditMs`), pas celle des rendus.
 - **Limite assumée** : les bases `.flexolibrary`/`.fcpevent` sont des SQLite Core Data opaques (aucune table de médias lisible) : SkVault ne
-  peut pas savoir quels médias le projet *réclame*. « Complet » = structure correcte, aucun lien cassé, aucune dépendance externe manquante ;
-  seul Final Cut garantit l'ouverture. Plugins tiers et polices ne sont pas dans la bibliothèque.
-- Piste suivante : recouper les dépendances externes avec le catalogue (le média existe-t-il sur un autre volume scanné ?), et la comparaison
-  de deux copies d'un même projet.
+  peut pas savoir quels médias le projet *réclame*, il ne voit que les liens présents. « Complet » = structure correcte, aucun lien cassé, tous les
+  originaux retrouvés ; seul Final Cut garantit l'ouverture. Plugins tiers et polices ne sont pas dans la bibliothèque.
+- Observé sur les disques d'Emma (2026-10-07) : la plupart des bibliothèques ne sont pas autonomes (sources sur `/Volumes/NEW`, `CRUTIAL`, `T7`,
+  `CSK2`, `TRANSF_CS`… et le Mac d'Emma) ; les fichiers d'analyse/rendu représentent la quasi-totalité de leur taille (régénérables).
+- Piste suivante : vue « Disques à retrouver » (toutes les sources manquantes, tous projets confondus) ; scanner les disques sources en mode doublons
+  pour que le recoupement les retrouve.
 
 ## Scans lancés depuis le web (démon d'agent)
 `pnpm agent run` : l'agent reste en veille et **interroge** l'API (`/api/ingest/agent/*` : hello → heartbeat 10 s → poll 3 s →

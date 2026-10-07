@@ -23,7 +23,7 @@ import { opendir } from 'fs/promises';
 import { homedir, hostname, platform } from 'os';
 import { basename, dirname, join, relative, sep, win32 } from 'path';
 import { SCAN_MODES, VOLUME_KINDS, type BrowseResult, type ProjectDto, type ScanFileDto, type ScanMode } from '@skvault/shared';
-import { discoverLibraries, inspectLibrary, isLibraryDir } from './fcp';
+import { buildNeighborIndex, discoverLibraries, inspectLibrary, isLibraryDir, type NeighborIndex } from './fcp';
 
 const BATCH = 2000;
 const QUICK_CHUNK = 64 * 1024;
@@ -87,6 +87,7 @@ async function fullHash(file: string): Promise<string> {
 }
 
 /** Photothèques iPhoto / Photos : le même fichier peut y exister plusieurs fois (versions retouchées) → jamais scannées en mode doublons. */
+const under = (p: string, root: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 const isPhotoLibraryName = (name: string) => /\.(photolibrary|photoslibrary)$/i.test(name);
 
 async function* walk(dir: string, onPackage?: (dir: string) => void): AsyncGenerator<string> {
@@ -240,12 +241,29 @@ async function scanFcpArchive(
 
   let projects = 0;
   let inspected = 0;
+  // Un dossier de projet (parent de la bibliothèque) n'est indexé qu'une fois, même s'il contient plusieurs bibliothèques.
+  const neighborCache = new Map<string, NeighborIndex>();
   while (queue.length) {
     const lib = queue.shift()!;
     const relPath = rel(lib);
     console.log(`  Inspection : ${relPath || '(racine du disque)'}`);
     const base = inspected;
-    const r = await inspectLibrary(lib, { tick: (n) => tick('inspecting', base + n), isNestedLibrary: isLibraryDir });
+
+    // Dossier du projet = dossier qui contient la bibliothèque. Si c'est la racine du disque, il est trop vaste pour être indexé.
+    const parent = dirname(lib);
+    const hasFolder = lib !== root && parent !== root && under(parent, root);
+    let neighbors: NeighborIndex | undefined;
+    if (hasFolder) {
+      neighbors = neighborCache.get(parent);
+      if (!neighbors) {
+        neighbors = await buildNeighborIndex(parent, (n) => tick('inspecting', base + n));
+        neighborCache.set(parent, neighbors);
+        console.log(`    dossier du projet « ${rel(parent)} » : ${neighbors.files} fichiers réels indexés`);
+      }
+    }
+    const r = await inspectLibrary(lib, {
+      tick: (n) => tick('inspecting', base + n), isNestedLibrary: isLibraryDir, neighbors, projectFolder: hasFolder ? rel(parent) : null,
+    });
     inspected += r.fileCount;
     r.nested.forEach(enqueue); // bibliothèques imbriquées : projets distincts
     r.report.nestedLibraries = r.nested.map(rel);

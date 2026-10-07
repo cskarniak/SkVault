@@ -188,6 +188,9 @@ model Project {
   verdict    String?
   /// Rapport d'inspection (catégories, événements, liens, avertissements) — voir FcpReport dans @skvault/shared
   report     Json?
+  /// Recoupement des originaux introuvables avec le catalogue des autres disques (voir ProjectsService.crossCheck)
+  resolution Json?
+  resolvedAt DateTime? @map("resolved_at")
   lastScanId String?   @map("last_scan_id")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")

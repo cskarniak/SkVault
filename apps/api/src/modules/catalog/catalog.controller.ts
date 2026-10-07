@@ -1,15 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { patchVolumeSchema } from '@skvault/shared';
 import { JwtGuard } from '../auth/jwt.guard';
 import { CatalogService } from './catalog.service';
+import { ProjectsService } from './projects.service';
 
 @ApiTags('catalogue')
 @ApiBearerAuth()
 @UseGuards(JwtGuard)
 @Controller()
 export class CatalogController {
-  constructor(private readonly service: CatalogService) {}
+  constructor(private readonly service: CatalogService, private readonly projectsService: ProjectsService) {}
 
   @Get('overview')
   overview() {
@@ -35,6 +36,18 @@ export class CatalogController {
     @Query('page') page?: string,
   ) {
     return this.service.projects({ q, volumeId, verdict, kind, page: page ? Math.max(1, Number(page)) : 1 });
+  }
+
+  /** Paires de bibliothèques liées : réplique, version contenue dans une autre, recoupement, complément */
+  @Get('projects-relations')
+  relations() {
+    return this.projectsService.allRelations();
+  }
+
+  /** Recoupe les originaux introuvables avec le catalogue des autres disques (aussi lancé après chaque scan) */
+  @Post('projects/recheck')
+  async recheck() {
+    return { checked: await this.projectsService.recheckAll() };
   }
 
   @Get('projects/:id')
